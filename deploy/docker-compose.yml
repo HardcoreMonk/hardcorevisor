@@ -87,6 +87,17 @@ services:
       start_period: 10s
     restart: unless-stopped
 
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: hcv-alertmanager
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
 volumes:
   etcd-data:
   prometheus-data:

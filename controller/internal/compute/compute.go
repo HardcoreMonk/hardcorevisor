@@ -253,6 +253,7 @@ type ComputeProvider interface {
 	ActionVM(handle int32, action string) (*VMInfo, error)
 	DestroyVM(handle int32) error
 	ListBackends() []BackendInfo
+	MigrateVM(handle int32, targetNode string) error
 }
 
 // ── Compute Service ─────────────────────────────────────────
@@ -340,6 +341,22 @@ func (cs *ComputeService) DestroyVM(handle int32) error {
 // ListBackends returns info about registered backends.
 func (cs *ComputeService) ListBackends() []BackendInfo {
 	return cs.selector.List()
+}
+
+// MigrateVM performs a simulated live migration by updating the VM's node field.
+func (cs *ComputeService) MigrateVM(handle int32, targetNode string) error {
+	backend, err := cs.findBackendForVM(handle)
+	if err != nil {
+		return err
+	}
+
+	vm, err := backend.GetVM(handle)
+	if err != nil {
+		return err
+	}
+
+	vm.Node = targetNode
+	return nil
 }
 
 func (cs *ComputeService) listBackends() []VMMBackend {

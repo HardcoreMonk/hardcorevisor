@@ -82,6 +82,15 @@ func main() {
 		},
 	})
 
+	vmMigrateCmd := &cobra.Command{
+		Use:   "migrate",
+		Short: "Live migrate a VM to another node",
+		RunE:  vmMigrate,
+	}
+	vmMigrateCmd.Flags().String("id", "", "VM ID to migrate")
+	vmMigrateCmd.Flags().String("target", "", "Target node name")
+	vmCmd.AddCommand(vmMigrateCmd)
+
 	// ── node subcommand ──
 	nodeCmd := &cobra.Command{Use: "node", Short: "Manage cluster nodes"}
 	nodeCmd.AddCommand(&cobra.Command{
@@ -416,6 +425,31 @@ func vmAction(id, action string) error {
 	}
 	defer resp.Body.Close()
 	fmt.Printf("VM %s: %s OK\n", id, action)
+	return nil
+}
+
+func vmMigrate(cmd *cobra.Command, args []string) error {
+	id, _ := cmd.Flags().GetString("id")
+	target, _ := cmd.Flags().GetString("target")
+	if id == "" {
+		return fmt.Errorf("--id is required")
+	}
+	if target == "" {
+		return fmt.Errorf("--target is required")
+	}
+
+	body := map[string]interface{}{
+		"target_node": target,
+	}
+	resp, err := apiPost(fmt.Sprintf("/api/v1/vms/%s/migrate", id), body)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if err := checkResponse(resp); err != nil {
+		return err
+	}
+	fmt.Printf("VM %s migrated to node '%s'.\n", id, target)
 	return nil
 }
 

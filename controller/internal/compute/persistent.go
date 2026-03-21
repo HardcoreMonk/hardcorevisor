@@ -88,6 +88,23 @@ func (p *PersistentComputeService) ListBackends() []BackendInfo {
 	return p.inner.ListBackends()
 }
 
+// MigrateVM delegates to the inner service, then persists the updated VM state.
+func (p *PersistentComputeService) MigrateVM(handle int32, targetNode string) error {
+	if err := p.inner.MigrateVM(handle, targetNode); err != nil {
+		return err
+	}
+	vm, err := p.inner.GetVM(handle)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if putErr := p.store.Put(ctx, vmStoreKey(vm.ID), vm); putErr != nil {
+		log.Printf("persistent: failed to update VM %d after migration: %v", vm.ID, putErr)
+	}
+	return nil
+}
+
 // LoadFromStore reads all persisted VMs from the store and recreates them
 // in-memory via the inner ComputeService. Called once at startup.
 func (p *PersistentComputeService) LoadFromStore() error {

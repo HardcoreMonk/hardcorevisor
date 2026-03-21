@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -65,6 +66,7 @@ func NewRouter(svc *Services, rbacUsers ...map[string]auth.RBACUser) http.Handle
 		mux.HandleFunc("POST /api/v1/vms/{id}/stop", svc.handleVMAction("stop"))
 		mux.HandleFunc("POST /api/v1/vms/{id}/pause", svc.handleVMAction("pause"))
 		mux.HandleFunc("POST /api/v1/vms/{id}/resume", svc.handleVMAction("resume"))
+		mux.HandleFunc("POST /api/v1/vms/{id}/migrate", svc.handleMigrateVM)
 		mux.HandleFunc("GET /api/v1/nodes", handleListNodes)
 		mux.HandleFunc("GET /api/v1/backends", svc.handleListBackends)
 
@@ -96,6 +98,12 @@ func NewRouter(svc *Services, rbacUsers ...map[string]auth.RBACUser) http.Handle
 			mux.HandleFunc("GET /api/v1/backups/{id}", svc.handleGetBackup)
 			mux.HandleFunc("DELETE /api/v1/backups/{id}", svc.handleDeleteBackup)
 		}
+
+		// Webhook
+		mux.HandleFunc("POST /api/v1/webhooks/alert", handleAlertWebhook)
+
+		// API Info
+		mux.HandleFunc("GET /api/v1/api-info", handleAPIInfo)
 	}
 
 	// Metrics endpoint (available in both live and stub modes)
@@ -125,6 +133,12 @@ func NewRouter(svc *Services, rbacUsers ...map[string]auth.RBACUser) http.Handle
 		mux.HandleFunc("POST /api/v1/vms/{id}/stop", handleStubVMAction)
 		mux.HandleFunc("POST /api/v1/vms/{id}/pause", handleStubVMAction)
 		mux.HandleFunc("GET /api/v1/nodes", handleListNodes)
+
+		// Webhook
+		mux.HandleFunc("POST /api/v1/webhooks/alert", handleAlertWebhook)
+
+		// API Info
+		mux.HandleFunc("GET /api/v1/api-info", handleAPIInfo)
 	}
 
 	// Middleware chain: RequestID → Audit → Logging → Metrics → RBAC → CORS → Recovery
@@ -144,6 +158,7 @@ func NewRouter(svc *Services, rbacUsers ...map[string]auth.RBACUser) http.Handle
 	auditLogger := auth.NewAuditLogger()
 	handler = auth.AuditMiddleware(auditLogger)(handler)
 
+	handler = versionMiddleware(handler)
 	handler = requestIDMiddleware(handler)
 
 	return handler
@@ -292,6 +307,33 @@ func (svc *Services) handleVMAction(action string) http.HandlerFunc {
 		}
 		writeJSON(w, http.StatusOK, vm)
 	}
+}
+
+func (svc *Services) handleMigrateVM(w http.ResponseWriter, r *http.Request) {
+	handle, err := parseVMID(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	var req struct {
+		TargetNode string `json:"target_node"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if req.TargetNode == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "target_node is required"})
+		return
+	}
+	if err := svc.Compute.MigrateVM(handle, req.TargetNode); err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"status":  "migrated",
+		"message": fmt.Sprintf("VM %d migrated to %s", handle, req.TargetNode),
+	})
 }
 
 func (svc *Services) handleListBackends(w http.ResponseWriter, _ *http.Request) {
@@ -545,6 +587,73 @@ func (svc *Services) handleDeleteBackup(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// ── Webhook Handlers ─────────────────────────────────
+
+// AlertmanagerAlert represents a single alert from Alertmanager webhook payload.
+type AlertmanagerAlert struct {
+	Status       string            `json:"status"`
+	Labels       map[string]string `json:"labels"`
+	Annotations  map[string]string `json:"annotations"`
+	StartsAt     string            `json:"startsAt"`
+	EndsAt       string            `json:"endsAt"`
+	GeneratorURL string            `json:"generatorURL"`
+	Fingerprint  string            `json:"fingerprint"`
+}
+
+// AlertmanagerWebhook represents the full Alertmanager webhook payload.
+type AlertmanagerWebhook struct {
+	Version           string              `json:"version"`
+	GroupKey           string              `json:"groupKey"`
+	TruncatedAlerts   int                 `json:"truncatedAlerts"`
+	Status            string              `json:"status"`
+	Receiver          string              `json:"receiver"`
+	GroupLabels       map[string]string   `json:"groupLabels"`
+	CommonLabels      map[string]string   `json:"commonLabels"`
+	CommonAnnotations map[string]string   `json:"commonAnnotations"`
+	ExternalURL       string              `json:"externalURL"`
+	Alerts            []AlertmanagerAlert `json:"alerts"`
+}
+
+func handleAlertWebhook(w http.ResponseWriter, r *http.Request) {
+	var payload AlertmanagerWebhook
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	for _, alert := range payload.Alerts {
+		slog.Warn("alert received",
+			slog.String("status", alert.Status),
+			slog.String("alertname", alert.Labels["alertname"]),
+			slog.String("severity", alert.Labels["severity"]),
+			slog.String("summary", alert.Annotations["summary"]),
+			slog.String("fingerprint", alert.Fingerprint),
+		)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "received"})
+}
+
+// ── API Info Handler ─────────────────────────────────
+
+// APIInfo holds API version metadata.
+type APIInfo struct {
+	CurrentVersion     string   `json:"current_version"`
+	SupportedVersions  []string `json:"supported_versions"`
+	DeprecatedVersions []string `json:"deprecated_versions"`
+	DocsURL            string   `json:"docs_url"`
+}
+
+func handleAPIInfo(w http.ResponseWriter, _ *http.Request) {
+	info := APIInfo{
+		CurrentVersion:     CurrentAPIVersion,
+		SupportedVersions:  []string{"v1"},
+		DeprecatedVersions: []string{},
+		DocsURL:            "/docs/openapi.yaml",
+	}
+	writeJSON(w, http.StatusOK, info)
 }
 
 // ── Helpers ──────────────────────────────────────────────

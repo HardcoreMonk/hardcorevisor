@@ -14,20 +14,28 @@ package compute
 
 import (
 	"fmt"
+	"os/exec"
 	"sync"
 	"sync/atomic"
 	"time"
 )
 
+// qemuProcess tracks a QEMU process and its QMP socket path.
+type qemuProcess struct {
+	socketPath string
+	cmd        *exec.Cmd
+}
+
 // QEMUBackend manages VMs via QEMU/QMP.
 // Current implementation is in-memory for dev/test.
 // Production will use QMP unix socket or libvirt API.
 type QEMUBackend struct {
-	mu       sync.RWMutex
-	vms      map[int32]*VMInfo
-	nextID   atomic.Int32
-	qmpAddr  string // QMP socket path (future)
-	emulated bool   // true = in-memory emulation (no real QEMU)
+	mu        sync.RWMutex
+	vms       map[int32]*VMInfo
+	processes map[int32]*qemuProcess
+	nextID    atomic.Int32
+	qmpAddr   string // QMP socket base path, e.g. /var/run/hcv
+	emulated  bool   // true = in-memory emulation (no real QEMU)
 }
 
 // QEMUConfig holds QEMU backend configuration.
@@ -40,8 +48,9 @@ type QEMUConfig struct {
 // If config is nil or Emulated is true, uses in-memory emulation.
 func NewQEMUBackend(config *QEMUConfig) *QEMUBackend {
 	b := &QEMUBackend{
-		vms:      make(map[int32]*VMInfo),
-		emulated: true,
+		vms:       make(map[int32]*VMInfo),
+		processes: make(map[int32]*qemuProcess),
+		emulated:  true,
 	}
 	b.nextID.Store(10000) // QEMU handles start at 10000 to avoid collision with rustvmm
 
@@ -171,27 +180,83 @@ func (b *QEMUBackend) transition(handle int32, targetState, qmpCmd string) error
 	return nil
 }
 
-// ── QMP Protocol (stubs for future implementation) ───
+// ── QMP Protocol ─────────────────────────────────────────
+
+// qmpSocketPath returns the QMP socket path for a given VM handle.
+func (b *QEMUBackend) qmpSocketPath(handle int32) string {
+	base := b.qmpAddr
+	if base == "" {
+		base = "/var/run/hcv"
+	}
+	return fmt.Sprintf("%s/qmp-%d.sock", base, handle)
+}
 
 // qmpCreateVM launches a QEMU process with QMP enabled.
-// Production: exec qemu-system-x86_64 -qmp unix:/path,server,nowait ...
+// In Real mode, it attempts to exec qemu-system-x86_64 and connect via QMP.
 func (b *QEMUBackend) qmpCreateVM(handle int32, name string, vcpus uint32, memoryMB uint64) error {
-	// TODO: Launch QEMU process with:
-	//   qemu-system-x86_64 \
-	//     -name <name> \
-	//     -machine q35,accel=kvm \
-	//     -smp <vcpus> \
-	//     -m <memoryMB> \
-	//     -qmp unix:/var/run/hcv/qmp-<handle>.sock,server,nowait \
-	//     -nographic
-	return fmt.Errorf("real QMP not yet implemented (handle=%d)", handle)
+	socketPath := b.qmpSocketPath(handle)
+
+	// Check if qemu-system-x86_64 is available
+	qemuBin, err := exec.LookPath("qemu-system-x86_64")
+	if err != nil {
+		return fmt.Errorf("qemu-system-x86_64 not found: %w", err)
+	}
+
+	args := []string{
+		"-name", name,
+		"-machine", "q35,accel=kvm",
+		"-smp", fmt.Sprintf("%d", vcpus),
+		"-m", fmt.Sprintf("%d", memoryMB),
+		"-qmp", fmt.Sprintf("unix:%s,server,nowait", socketPath),
+		"-nographic",
+		"-nodefaults",
+	}
+
+	cmd := exec.Command(qemuBin, args...)
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("qemu start failed: %w", err)
+	}
+
+	proc := &qemuProcess{
+		socketPath: socketPath,
+		cmd:        cmd,
+	}
+	b.processes[handle] = proc
+
+	// Wait briefly for QMP socket to become available, then connect
+	// to verify the process started correctly.
+	time.Sleep(500 * time.Millisecond)
+
+	client, err := QMPDial(socketPath, 5*time.Second)
+	if err != nil {
+		// Kill the process if we can't connect
+		cmd.Process.Kill()
+		cmd.Wait()
+		delete(b.processes, handle)
+		return fmt.Errorf("QMP socket connection failed for handle %d: %w", handle, err)
+	}
+	client.Close()
+
+	return nil
 }
 
 // qmpCommand sends a QMP command to a running QEMU instance.
-// Production: connect to unix socket, send {"execute": "<cmd>"}, parse response.
+// In Real mode, it connects to the QMP unix socket and executes the command.
 func (b *QEMUBackend) qmpCommand(handle int32, command string) error {
-	// TODO: Connect to /var/run/hcv/qmp-<handle>.sock
-	//   Send: {"execute": "<command>"}
-	//   Read: {"return": {}}
-	return fmt.Errorf("real QMP not yet implemented (handle=%d, cmd=%s)", handle, command)
+	proc, ok := b.processes[handle]
+	if !ok {
+		return fmt.Errorf("no QEMU process for handle %d: socket connection failed", handle)
+	}
+
+	client, err := QMPDial(proc.socketPath, 5*time.Second)
+	if err != nil {
+		return fmt.Errorf("QMP connect for handle %d: %w", handle, err)
+	}
+	defer client.Close()
+
+	if err := client.Execute(command, nil); err != nil {
+		return fmt.Errorf("QMP command %q for handle %d: %w", command, handle, err)
+	}
+
+	return nil
 }

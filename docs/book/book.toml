@@ -1,0 +1,10 @@
+[book]
+title = "HardCoreVisor Documentation"
+authors = ["HardCoreVisor Team"]
+language = "ko"
+
+[build]
+build-dir = "../book-output"
+
+[output.html]
+git-repository-url = "https://github.com/HardcoreMonk/hardcorevisor"

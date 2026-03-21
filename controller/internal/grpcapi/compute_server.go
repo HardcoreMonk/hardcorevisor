@@ -88,9 +88,15 @@ func (s *ComputeServer) GetVM(ctx context.Context, req *pb.GetVMRequest) (*pb.VM
 }
 
 func (s *ComputeServer) LiveMigrate(ctx context.Context, req *pb.LiveMigrateRequest) (*pb.LiveMigrateResponse, error) {
+	if err := s.svc.MigrateVM(req.Handle, req.TargetNode); err != nil {
+		return &pb.LiveMigrateResponse{
+			Success: false,
+			Message: fmt.Sprintf("migration failed: %v", err),
+		}, nil
+	}
 	return &pb.LiveMigrateResponse{
-		Success: false,
-		Message: "live migration not yet implemented",
+		Success: true,
+		Message: fmt.Sprintf("VM %d migrated to %s", req.Handle, req.TargetNode),
 	}, nil
 }
 
