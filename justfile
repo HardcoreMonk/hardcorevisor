@@ -258,6 +258,16 @@ bench:
 go-bench:
     cd controller && GOTOOLCHAIN=local go test -bench=. -benchmem ./internal/api/
 
+# Run API load test
+load-test:
+    chmod +x scripts/load-test.sh
+    ./scripts/load-test.sh
+
+# Run io_uring benchmark
+io-bench:
+    chmod +x scripts/io-bench.sh
+    ./scripts/io-bench.sh
+
 # ═══════════════════════════════════════════════════════════
 # Release
 # ═══════════════════════════════════════════════════════════

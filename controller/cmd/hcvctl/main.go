@@ -59,12 +59,17 @@ func main() {
 		Short: "List all VMs",
 		RunE:  vmList,
 	})
-	vmCmd.AddCommand(&cobra.Command{
+	vmCreateCmd := &cobra.Command{
 		Use:   "create [name]",
 		Short: "Create a new VM",
 		Args:  cobra.ExactArgs(1),
 		RunE:  vmCreate,
-	})
+	}
+	vmCreateCmd.Flags().String("disk", "", "Disk image path (qcow2)")
+	vmCreateCmd.Flags().String("backend", "", "VMM backend: qemu or rustvmm (default: auto)")
+	vmCreateCmd.Flags().Uint32("vcpus", 2, "Number of vCPUs")
+	vmCreateCmd.Flags().Uint64("memory", 4096, "Memory in MB")
+	vmCmd.AddCommand(vmCreateCmd)
 	vmCmd.AddCommand(&cobra.Command{
 		Use:   "start [id]",
 		Short: "Start a VM",
@@ -405,14 +410,31 @@ func vmList(cmd *cobra.Command, args []string) error {
 }
 
 func vmCreate(cmd *cobra.Command, args []string) error {
-	body := fmt.Sprintf(`{"name":"%s","vcpus":2,"memory_mb":4096}`, args[0])
-	resp, err := http.Post(apiAddr+"/api/v1/vms", "application/json",
-		io.NopCloser(io.Reader(nil)))
-	_ = body
+	vcpus, _ := cmd.Flags().GetUint32("vcpus")
+	memory, _ := cmd.Flags().GetUint64("memory")
+	disk, _ := cmd.Flags().GetString("disk")
+	backend, _ := cmd.Flags().GetString("backend")
+
+	body := map[string]interface{}{
+		"name":      args[0],
+		"vcpus":     vcpus,
+		"memory_mb": memory,
+	}
+	if backend != "" {
+		body["backend"] = backend
+	}
+	if disk != "" {
+		body["disk"] = disk
+	}
+
+	resp, err := apiPost("/api/v1/vms", body)
 	if err != nil {
-		return fmt.Errorf("API request failed: %w", err)
+		return err
 	}
 	defer resp.Body.Close()
+	if err := checkResponse(resp); err != nil {
+		return err
+	}
 	fmt.Printf("VM '%s' created.\n", args[0])
 	return nil
 }

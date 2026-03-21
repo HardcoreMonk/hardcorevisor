@@ -1,7 +1,7 @@
 // Package storage — Storage Agent managing ZFS/Ceph/PBS pools
 //
-// In-memory implementation for dev/test. Manages storage pools,
-// volumes, and snapshots with concurrent-safe operations.
+// Supports pluggable storage drivers (memory, zfs).
+// Default is in-memory for dev/test.
 package storage
 
 import (
@@ -44,18 +44,26 @@ type Snapshot struct {
 // ── Service ──────────────────────────────────────────
 
 // Service manages storage pools, volumes, and snapshots.
+// It delegates to a StorageDriver for the actual backend operations.
 type Service struct {
-	mu        sync.RWMutex
-	pools     map[string]*Pool
-	volumes   map[string]*Volume
-	snapshots map[string]*Snapshot
-	nextVolID atomic.Int32
+	driver     StorageDriver
+	mu         sync.RWMutex
+	pools      map[string]*Pool
+	volumes    map[string]*Volume
+	snapshots  map[string]*Snapshot
+	nextVolID  atomic.Int32
 	nextSnapID atomic.Int32
 }
 
-// NewService creates a storage service with default pools.
+// NewService creates a storage service with the default in-memory driver.
 func NewService() *Service {
+	return NewServiceWithDriver(NewMemoryDriver())
+}
+
+// NewServiceWithDriver creates a storage service with the given driver.
+func NewServiceWithDriver(driver StorageDriver) *Service {
 	s := &Service{
+		driver:    driver,
 		pools:     make(map[string]*Pool),
 		volumes:   make(map[string]*Volume),
 		snapshots: make(map[string]*Snapshot),
@@ -63,29 +71,45 @@ func NewService() *Service {
 	s.nextVolID.Store(1)
 	s.nextSnapID.Store(1)
 
-	// Default pools
-	s.pools["local-zfs"] = &Pool{
-		Name: "local-zfs", PoolType: "zfs",
-		TotalBytes: 3435973836800, UsedBytes: 2302160486400, // 3.2TiB / 2.1TiB
-		Health: "healthy",
+	// For the memory driver, pre-populate pools for backward compatibility
+	if _, ok := driver.(*MemoryDriver); ok {
+		s.pools["local-zfs"] = &Pool{
+			Name: "local-zfs", PoolType: "zfs",
+			TotalBytes: 3435973836800, UsedBytes: 2302160486400,
+			Health: "healthy",
+		}
+		s.pools["ceph-pool"] = &Pool{
+			Name: "ceph-pool", PoolType: "ceph",
+			TotalBytes: 10995116277760, UsedBytes: 4398046511104,
+			Health: "healthy",
+		}
 	}
-	s.pools["ceph-pool"] = &Pool{
-		Name: "ceph-pool", PoolType: "ceph",
-		TotalBytes: 10995116277760, UsedBytes: 4398046511104, // 10TiB / 4TiB
-		Health: "healthy",
-	}
+
 	return s
 }
 
+// DriverName returns the name of the underlying storage driver.
+func (s *Service) DriverName() string {
+	return s.driver.Name()
+}
+
 // ListPools returns all storage pools.
+// For memory driver, uses local state; for others, delegates to driver.
 func (s *Service) ListPools() []*Pool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	result := make([]*Pool, 0, len(s.pools))
-	for _, p := range s.pools {
-		result = append(result, p)
+	if _, ok := s.driver.(*MemoryDriver); ok {
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		result := make([]*Pool, 0, len(s.pools))
+		for _, p := range s.pools {
+			result = append(result, p)
+		}
+		return result
 	}
-	return result
+	pools, err := s.driver.ListPools()
+	if err != nil {
+		return nil
+	}
+	return pools
 }
 
 // GetPool returns a pool by name.
@@ -101,6 +125,10 @@ func (s *Service) GetPool(name string) (*Pool, error) {
 
 // CreateVolume creates a new volume in the specified pool.
 func (s *Service) CreateVolume(pool, name, format string, sizeBytes uint64) (*Volume, error) {
+	if _, ok := s.driver.(*MemoryDriver); !ok {
+		return s.driver.CreateVolume(pool, name, format, sizeBytes)
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, ok := s.pools[pool]; !ok {
@@ -133,6 +161,10 @@ func (s *Service) ListVolumes(pool string) []*Volume {
 
 // DeleteVolume removes a volume by ID.
 func (s *Service) DeleteVolume(id string) error {
+	if _, ok := s.driver.(*MemoryDriver); !ok {
+		return s.driver.DeleteVolume(id)
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	vol, ok := s.volumes[id]
@@ -150,6 +182,10 @@ func (s *Service) DeleteVolume(id string) error {
 
 // CreateSnapshot creates a snapshot of a volume.
 func (s *Service) CreateSnapshot(volumeID, name string) (*Snapshot, error) {
+	if _, ok := s.driver.(*MemoryDriver); !ok {
+		return s.driver.CreateSnapshot(volumeID, name)
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, ok := s.volumes[volumeID]; !ok {
@@ -166,6 +202,14 @@ func (s *Service) CreateSnapshot(volumeID, name string) (*Snapshot, error) {
 
 // ListSnapshots returns snapshots, optionally filtered by volume.
 func (s *Service) ListSnapshots(volumeID string) []*Snapshot {
+	if _, ok := s.driver.(*MemoryDriver); !ok {
+		snaps, err := s.driver.ListSnapshots(volumeID)
+		if err != nil {
+			return nil
+		}
+		return snaps
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	result := make([]*Snapshot, 0)

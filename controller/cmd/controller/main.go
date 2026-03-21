@@ -69,7 +69,14 @@ func main() {
 		computeProvider = persistent
 	}
 
-	storageSvc := storage.NewService()
+	var storageSvc *storage.Service
+	switch cfg.Storage.Driver {
+	case "zfs":
+		slog.Info("Using ZFS storage driver")
+		storageSvc = storage.NewServiceWithDriver(&storage.ZFSDriver{})
+	default:
+		storageSvc = storage.NewService()
+	}
 	networkSvc := network.NewService()
 	peripheralSvc := peripheral.NewService()
 	haSvc := ha.NewService()

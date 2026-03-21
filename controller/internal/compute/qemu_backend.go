@@ -30,18 +30,22 @@ type qemuProcess struct {
 // Current implementation is in-memory for dev/test.
 // Production will use QMP unix socket or libvirt API.
 type QEMUBackend struct {
-	mu        sync.RWMutex
-	vms       map[int32]*VMInfo
-	processes map[int32]*qemuProcess
-	nextID    atomic.Int32
-	qmpAddr   string // QMP socket base path, e.g. /var/run/hcv
-	emulated  bool   // true = in-memory emulation (no real QEMU)
+	mu          sync.RWMutex
+	vms         map[int32]*VMInfo
+	processes   map[int32]*qemuProcess
+	nextID      atomic.Int32
+	qmpAddr     string // QMP socket base path, e.g. /var/run/hcv
+	emulated    bool   // true = in-memory emulation (no real QEMU)
+	defaultDisk string // default disk image path (optional)
+	networkMode string // "user", "tap", "none"
 }
 
 // QEMUConfig holds QEMU backend configuration.
 type QEMUConfig struct {
-	QMPSocket string // unix socket path, e.g. /var/run/qemu/qmp.sock
-	Emulated  bool   // true = in-memory mock (no QEMU binary needed)
+	QMPSocket   string // unix socket path, e.g. /var/run/qemu/qmp.sock
+	Emulated    bool   // true = in-memory mock (no QEMU binary needed)
+	DefaultDisk string // default disk image path (optional)
+	NetworkMode string // "user" (SLIRP), "tap", "none" (default: "user")
 }
 
 // NewQEMUBackend creates a QEMU backend.
@@ -57,6 +61,11 @@ func NewQEMUBackend(config *QEMUConfig) *QEMUBackend {
 	if config != nil {
 		b.qmpAddr = config.QMPSocket
 		b.emulated = config.Emulated
+		b.defaultDisk = config.DefaultDisk
+		b.networkMode = config.NetworkMode
+	}
+	if b.networkMode == "" {
+		b.networkMode = "user"
 	}
 
 	return b
@@ -101,8 +110,18 @@ func (b *QEMUBackend) DestroyVM(handle int32) error {
 	}
 
 	if !b.emulated {
+		// Send QMP quit command first
 		if err := b.qmpCommand(handle, "quit"); err != nil {
-			return fmt.Errorf("qemu destroy: %w", err)
+			// Log but continue to kill process
+			_ = err
+		}
+		// Kill QEMU process if in Real mode
+		if proc, ok := b.processes[handle]; ok {
+			if proc.cmd != nil && proc.cmd.Process != nil {
+				proc.cmd.Process.Kill()
+				proc.cmd.Wait()
+			}
+			delete(b.processes, handle)
 		}
 	}
 
@@ -210,6 +229,24 @@ func (b *QEMUBackend) qmpCreateVM(handle int32, name string, vcpus uint32, memor
 		"-qmp", fmt.Sprintf("unix:%s,server,nowait", socketPath),
 		"-nographic",
 		"-nodefaults",
+	}
+
+	// Disk: use default disk image if configured
+	diskPath := b.defaultDisk
+	if diskPath != "" {
+		args = append(args, "-drive", fmt.Sprintf("file=%s,format=qcow2,if=virtio", diskPath))
+	}
+
+	// Network
+	switch b.networkMode {
+	case "tap":
+		args = append(args, "-netdev", "tap,id=net0,ifname=tap0,script=no,downscript=no")
+		args = append(args, "-device", "virtio-net-pci,netdev=net0")
+	case "user":
+		args = append(args, "-netdev", "user,id=net0,hostfwd=tcp::2222-:22")
+		args = append(args, "-device", "virtio-net-pci,netdev=net0")
+	default: // none
+		args = append(args, "-nic", "none")
 	}
 
 	cmd := exec.Command(qemuBin, args...)

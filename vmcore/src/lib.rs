@@ -35,10 +35,12 @@
 pub mod event_ring;
 pub mod io_engine;
 pub mod kvm_boot;
+pub mod kvm_loader;
 pub mod kvm_mgr;
 pub mod kvm_sys;
 pub mod memory_mgr;
 pub mod panic_barrier;
+pub mod tap_device;
 pub mod vcpu_mgr;
 pub mod virtio_blk;
 pub mod virtio_blk_io;
