@@ -1,0 +1,22 @@
+[package]
+name = "hcvtui"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "HardCoreVisor Terminal UI — Ratatui-based management console"
+
+[[bin]]
+name = "hcvtui"
+path = "src/main.rs"
+
+[dependencies]
+ratatui = "0.29"
+crossterm = "0.28"
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+color-eyre.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }

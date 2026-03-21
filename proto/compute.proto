@@ -1,0 +1,108 @@
+syntax = "proto3";
+
+package hardcorevisor.compute.v1;
+
+option go_package = "github.com/HardcoreMonk/hardcorevisor/controller/pkg/proto/computepb";
+
+service ComputeService {
+  rpc CreateVM(CreateVMRequest) returns (CreateVMResponse);
+  rpc DestroyVM(DestroyVMRequest) returns (DestroyVMResponse);
+  rpc StartVM(VMActionRequest) returns (VMActionResponse);
+  rpc StopVM(VMActionRequest) returns (VMActionResponse);
+  rpc PauseVM(VMActionRequest) returns (VMActionResponse);
+  rpc ResumeVM(VMActionRequest) returns (VMActionResponse);
+  rpc ListVMs(ListVMsRequest) returns (ListVMsResponse);
+  rpc GetVM(GetVMRequest) returns (VMInfo);
+  rpc LiveMigrate(LiveMigrateRequest) returns (LiveMigrateResponse);
+}
+
+// ── Messages ─────────────────────────────────────────────
+
+message CreateVMRequest {
+  string name = 1;
+  uint32 vcpus = 2;
+  uint64 memory_mb = 3;
+  string template_id = 4;
+  repeated DiskSpec disks = 5;
+  repeated NicSpec nics = 6;
+}
+
+message CreateVMResponse {
+  VMInfo vm = 1;
+}
+
+message DestroyVMRequest {
+  int32 handle = 1;
+  bool force = 2;
+}
+
+message DestroyVMResponse {}
+
+message VMActionRequest {
+  int32 handle = 1;
+}
+
+message VMActionResponse {
+  VMState new_state = 1;
+}
+
+message ListVMsRequest {
+  string node_filter = 1;
+  VMState state_filter = 2;
+}
+
+message ListVMsResponse {
+  repeated VMInfo vms = 1;
+}
+
+message GetVMRequest {
+  int32 handle = 1;
+}
+
+message LiveMigrateRequest {
+  int32 handle = 1;
+  string target_node = 2;
+}
+
+message LiveMigrateResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// ── Shared Types ─────────────────────────────────────────
+
+enum VMState {
+  VM_STATE_UNSPECIFIED = 0;
+  VM_STATE_CREATED = 1;
+  VM_STATE_CONFIGURED = 2;
+  VM_STATE_RUNNING = 3;
+  VM_STATE_PAUSED = 4;
+  VM_STATE_STOPPED = 5;
+}
+
+message VMInfo {
+  int32 handle = 1;
+  string name = 2;
+  VMState state = 3;
+  uint32 vcpus = 4;
+  uint64 memory_mb = 5;
+  string node = 6;
+  repeated DiskSpec disks = 7;
+  repeated NicSpec nics = 8;
+  int64 created_at = 9;
+  int64 updated_at = 10;
+}
+
+message DiskSpec {
+  string path = 1;
+  uint64 size_gb = 2;
+  string format = 3;       // qcow2, raw, zvol
+  string storage_pool = 4;
+}
+
+message NicSpec {
+  string bridge = 1;
+  string mac_address = 2;
+  string model = 3;        // virtio, e1000
+  int32 vlan_id = 4;
+}

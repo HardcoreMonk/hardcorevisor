@@ -1,0 +1,55 @@
+syntax = "proto3";
+
+package hardcorevisor.peripheral.v1;
+
+option go_package = "github.com/HardcoreMonk/hardcorevisor/controller/pkg/proto/peripheralpb";
+
+service PeripheralManager {
+  rpc AttachDevice(AttachDeviceRequest) returns (AttachDeviceResponse);
+  rpc DetachDevice(DetachDeviceRequest) returns (DetachDeviceResponse);
+  rpc ListDevices(ListDevicesRequest) returns (ListDevicesResponse);
+}
+
+enum DeviceType {
+  DEVICE_TYPE_UNSPECIFIED = 0;
+  DEVICE_TYPE_GPU = 1;
+  DEVICE_TYPE_NIC = 2;
+  DEVICE_TYPE_USB = 3;
+  DEVICE_TYPE_DISK = 4;
+}
+
+message AttachDeviceRequest {
+  int32 vm_handle = 1;
+  DeviceType device_type = 2;
+  string device_id = 3;
+  map<string, string> options = 4;
+}
+
+message AttachDeviceResponse {
+  bool success = 1;
+}
+
+message DetachDeviceRequest {
+  int32 vm_handle = 1;
+  string device_id = 2;
+}
+
+message DetachDeviceResponse {
+  bool success = 1;
+}
+
+message ListDevicesRequest {
+  DeviceType type_filter = 1;
+}
+
+message ListDevicesResponse {
+  repeated DeviceInfo devices = 1;
+}
+
+message DeviceInfo {
+  string id = 1;
+  DeviceType device_type = 2;
+  string description = 3;
+  string pci_address = 4;
+  int32 attached_vm = 5;
+}

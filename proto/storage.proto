@@ -1,0 +1,68 @@
+syntax = "proto3";
+
+package hardcorevisor.storage.v1;
+
+option go_package = "github.com/HardcoreMonk/hardcorevisor/controller/pkg/proto/storagepb";
+
+service StorageAgent {
+  rpc ListPools(ListPoolsRequest) returns (ListPoolsResponse);
+  rpc CreateVolume(CreateVolumeRequest) returns (Volume);
+  rpc DeleteVolume(DeleteVolumeRequest) returns (DeleteVolumeResponse);
+  rpc CreateSnapshot(CreateSnapshotRequest) returns (Snapshot);
+  rpc ListSnapshots(ListSnapshotsRequest) returns (ListSnapshotsResponse);
+}
+
+message ListPoolsRequest {}
+
+message ListPoolsResponse {
+  repeated StoragePool pools = 1;
+}
+
+message StoragePool {
+  string name = 1;
+  string pool_type = 2;   // zfs, ceph, lvm, dir
+  uint64 total_bytes = 3;
+  uint64 used_bytes = 4;
+  string health = 5;
+}
+
+message CreateVolumeRequest {
+  string pool = 1;
+  string name = 2;
+  uint64 size_bytes = 3;
+  string format = 4;
+}
+
+message Volume {
+  string id = 1;
+  string pool = 2;
+  string name = 3;
+  uint64 size_bytes = 4;
+  string path = 5;
+}
+
+message DeleteVolumeRequest {
+  string id = 1;
+}
+
+message DeleteVolumeResponse {}
+
+message CreateSnapshotRequest {
+  string volume_id = 1;
+  string name = 2;
+}
+
+message Snapshot {
+  string id = 1;
+  string volume_id = 2;
+  string name = 3;
+  int64 created_at = 4;
+}
+
+message ListSnapshotsRequest {
+  string volume_id = 1;
+}
+
+message ListSnapshotsResponse {
+  repeated Snapshot snapshots = 1;
+}

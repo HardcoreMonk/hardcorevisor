@@ -1,0 +1,25 @@
+[package]
+name = "vmcore"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "HardCoreVisor KVM core — Rust staticlib with FFI panic barrier"
+
+[lib]
+name = "vmcore"
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+libc = "0.2"
+io-uring = "0.7"
+
+[dev-dependencies]
+proptest = "1"
+tempfile = "3"
+
+[build-dependencies]
+cbindgen = "0.27"

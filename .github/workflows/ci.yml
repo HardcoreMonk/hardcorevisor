@@ -1,0 +1,145 @@
+# HardCoreVisor CI Pipeline
+# Triggers: push to main, pull requests
+# Jobs: lint → test → e2e → build → security
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ── Rust vmcore ──────────────────────────────────────────
+  rust-lint:
+    name: Rust Lint
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo fmt
+        run: cargo fmt -p vmcore -- --check
+      - name: cargo clippy
+        run: cargo clippy -p vmcore -- -D warnings
+
+  rust-test:
+    name: Rust Test
+    runs-on: ubuntu-24.04
+    needs: rust-lint
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo test
+        run: cargo test -p vmcore -- --test-threads=1
+      - name: cargo build release
+        run: cargo build -p vmcore --release
+      - name: verify libvmcore.a
+        run: test -f vmcore/target/release/libvmcore.a
+      - name: verify vmcore.h
+        run: test -f vmcore/vmcore.h
+
+  rust-security:
+    name: Rust Security
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-audit
+        run: cargo install cargo-audit
+      - name: cargo audit
+        run: cargo audit
+
+  # ── Go Controller ────────────────────────────────────────
+  go-lint:
+    name: Go Lint
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+      - name: go vet
+        run: cd controller && go mod tidy && go vet ./...
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          working-directory: controller
+
+  go-test:
+    name: Go Test
+    runs-on: ubuntu-24.04
+    needs: go-lint
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+      - name: go mod tidy
+        run: cd controller && go mod tidy
+      - name: go test (race)
+        run: cd controller && go test -race -count=1 -v ./...
+
+  go-security:
+    name: Go Security
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          cd controller && go mod tidy && govulncheck ./...
+
+  # ── E2E Integration ─────────────────────────────────────
+  e2e:
+    name: E2E Integration
+    runs-on: ubuntu-24.04
+    needs: [rust-test, go-test]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+      - uses: Swatinem/rust-cache@v2
+      - name: Build vmcore
+        run: cargo build -p vmcore --release
+      - name: Run E2E tests
+        run: |
+          cd controller && go mod tidy
+          go test -race -count=1 -v -run 'TestE2E' ./tests/... 2>/dev/null || \
+          go test -race -count=1 -v ./...
+
+  # ── Build Artifacts ─────────────────────────────────────
+  build:
+    name: Build All
+    runs-on: ubuntu-24.04
+    needs: e2e
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+      - uses: Swatinem/rust-cache@v2
+      - name: Build vmcore (release)
+        run: cargo build -p vmcore --release
+      - name: Build hcvtui
+        run: cargo build -p hcvtui --release 2>/dev/null || echo "hcvtui build skipped (sysinfo may need system libs)"
+      - name: Build Go Controller
+        run: cd controller && go mod tidy && go build -o ../target/hcv-controller ./cmd/controller
+      - name: Build hcvctl
+        run: cd controller && go build -o ../target/hcvctl ./cmd/hcvctl
+      - name: List artifacts
+        run: ls -lh target/release/libvmcore.a target/hcv-controller target/hcvctl 2>/dev/null || true

@@ -1,0 +1,46 @@
+# ═══ Rust ═══
+/target/
+**/*.rs.bk
+Cargo.lock
+!vmcore/Cargo.lock
+
+# ═══ Go ═══
+/controller/vendor/
+
+# ═══ Build artifacts ═══
+*.o
+*.a
+*.so
+*.dylib
+
+# ═══ IDE ═══
+.vscode/*
+!.vscode/settings.json
+!.vscode/launch.json
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+*~
+
+# ═══ OS ═══
+.DS_Store
+Thumbs.db
+
+# ═══ Docker ═══
+deploy/data/
+
+# ═══ Coverage ═══
+*.profraw
+*.profdata
+coverage.out
+coverage.html
+tarpaulin-report.html
+
+# ═══ Generated ═══
+controller/pkg/proto/*pb/*.go
+vmcore/vmcore.h
+
+# ═══ Environment ═══
+.env
+.env.local

@@ -1,0 +1,27 @@
+# HardCoreVisor Controller — Multi-stage Docker build
+# Uses Mock FFI (no libvmcore.a dependency in container)
+
+FROM golang:1.23-bookworm AS builder
+
+WORKDIR /build
+COPY controller/go.mod controller/go.sum* ./
+RUN go mod download 2>/dev/null || true
+
+COPY controller/ .
+RUN go mod tidy && \
+    CGO_ENABLED=0 go build -ldflags="-s -w \
+        -X main.version=$(cat VERSION 2>/dev/null || echo dev) \
+        -X main.gitCommit=$(git rev-parse --short HEAD 2>/dev/null || echo unknown) \
+        -X main.buildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        -o /hcv-controller ./cmd/controller && \
+    CGO_ENABLED=0 go build -ldflags="-s -w" -o /hcvctl ./cmd/hcvctl
+
+FROM gcr.io/distroless/static-debian12:nonroot
+
+COPY --from=builder /hcv-controller /usr/local/bin/hcv-controller
+COPY --from=builder /hcvctl /usr/local/bin/hcvctl
+
+EXPOSE 8080
+USER nonroot:nonroot
+
+ENTRYPOINT ["/usr/local/bin/hcv-controller"]

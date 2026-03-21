@@ -1,0 +1,38 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Rust: vmcore tests",
+      "type": "lldb",
+      "request": "launch",
+      "cargo": { "args": ["test", "--no-run", "-p", "vmcore"] },
+      "args": [],
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Rust: hcvtui",
+      "type": "lldb",
+      "request": "launch",
+      "cargo": { "args": ["build", "-p", "hcvtui"] },
+      "args": [],
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Go: Controller",
+      "type": "go",
+      "request": "launch",
+      "mode": "auto",
+      "program": "${workspaceFolder}/controller/cmd/controller",
+      "cwd": "${workspaceFolder}/controller"
+    },
+    {
+      "name": "Go: hcvctl vm list",
+      "type": "go",
+      "request": "launch",
+      "mode": "auto",
+      "program": "${workspaceFolder}/controller/cmd/hcvctl",
+      "args": ["vm", "list"],
+      "cwd": "${workspaceFolder}/controller"
+    }
+  ]
+}
