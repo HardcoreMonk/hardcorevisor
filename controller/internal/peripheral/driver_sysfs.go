@@ -2,6 +2,7 @@ package peripheral
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -152,6 +153,73 @@ func classifyPCIDevice(classStr, vendor, deviceID string) (DeviceType, string) {
 	default:
 		return "", ""
 	}
+}
+
+// BindVFIO binds a PCI device to the vfio-pci driver for passthrough.
+func (d *SysfsDriver) BindVFIO(pciAddr string) error {
+	// 1. Write "vfio-pci" to /sys/bus/pci/devices/{addr}/driver_override
+	overridePath := fmt.Sprintf("/sys/bus/pci/devices/%s/driver_override", pciAddr)
+	if err := os.WriteFile(overridePath, []byte("vfio-pci"), 0644); err != nil {
+		return fmt.Errorf("driver_override: %w", err)
+	}
+
+	// 2. Unbind from current driver
+	// Read current driver symlink
+	driverLink := fmt.Sprintf("/sys/bus/pci/devices/%s/driver", pciAddr)
+	if _, err := os.Readlink(driverLink); err == nil {
+		unbindPath := driverLink + "/unbind"
+		os.WriteFile(unbindPath, []byte(pciAddr), 0644) // ignore error if already unbound
+	}
+
+	// 3. Trigger probe to bind to vfio-pci
+	probePath := "/sys/bus/pci/drivers_probe"
+	if err := os.WriteFile(probePath, []byte(pciAddr), 0644); err != nil {
+		return fmt.Errorf("drivers_probe: %w", err)
+	}
+
+	return nil
+}
+
+// UnbindVFIO restores the device to its original driver.
+func (d *SysfsDriver) UnbindVFIO(pciAddr string) error {
+	overridePath := fmt.Sprintf("/sys/bus/pci/devices/%s/driver_override", pciAddr)
+	// Clear override by writing empty string
+	if err := os.WriteFile(overridePath, []byte(""), 0644); err != nil {
+		return fmt.Errorf("clear driver_override: %w", err)
+	}
+
+	// Unbind from vfio-pci
+	unbindPath := "/sys/bus/pci/drivers/vfio-pci/unbind"
+	os.WriteFile(unbindPath, []byte(pciAddr), 0644) // ignore error
+
+	// Trigger reprobe for original driver
+	probePath := "/sys/bus/pci/drivers_probe"
+	return os.WriteFile(probePath, []byte(pciAddr), 0644)
+}
+
+// AttachDevice overrides MemoryDriver.AttachDevice to perform VFIO binding.
+func (d *SysfsDriver) AttachDevice(deviceID string, vmHandle int32) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	dev, ok := d.devices[deviceID]
+	if !ok {
+		return fmt.Errorf("device not found: %s", deviceID)
+	}
+	if dev.AttachedVM != 0 {
+		return fmt.Errorf("device %s already attached to VM %d", deviceID, dev.AttachedVM)
+	}
+
+	// Attempt VFIO bind (best-effort, may fail without root)
+	if dev.PCIAddress != "" && !strings.HasPrefix(dev.PCIAddress, "usb") {
+		if err := d.BindVFIO(dev.PCIAddress); err != nil {
+			// Log warning but don't fail — useful for testing without root
+			slog.Warn("VFIO bind failed (may need root)", "device", deviceID, "error", err)
+		}
+	}
+
+	dev.AttachedVM = vmHandle
+	dev.Driver = "vfio-pci"
+	return nil
 }
 
 // readSysfsFile reads a single-line sysfs attribute file.

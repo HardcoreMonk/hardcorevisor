@@ -42,7 +42,8 @@ func main() {
 	// ── Structured logging ──
 	logging.Setup(cfg.Log.Level, cfg.Log.Format)
 
-	slog.Info("HardCoreVisor Controller starting", "version", version)
+	nodeName := ha.GetNodeName()
+	slog.Info("HardCoreVisor Controller starting", "version", version, "node", nodeName)
 
 	// ── Initialize services ──
 	core := ffi.NewMockVMCore()
@@ -91,7 +92,10 @@ func main() {
 	var haSvc *ha.Service
 	if _, isMemory := kvStore.(*store.MemoryStore); !isMemory {
 		slog.Info("Using etcd HA driver")
-		haSvc = ha.NewServiceWithDriver(ha.NewEtcdDriver(kvStore, "node-01"))
+		haSvc = ha.NewServiceWithDriver(ha.NewEtcdDriver(kvStore, nodeName))
+		hb := ha.NewHeartbeat(kvStore, nodeName, 10*time.Second)
+		hb.Start()
+		defer hb.Stop()
 	} else {
 		haSvc = ha.NewService()
 	}

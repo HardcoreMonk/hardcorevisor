@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-controller
+  labels:
+    app: hardcorevisor
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: hardcorevisor
+  template:
+    metadata:
+      labels:
+        app: hardcorevisor
+    spec:
+      containers:
+        - name: controller
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: 8080
+              name: http
+            - containerPort: 9090
+              name: grpc
+          env:
+            - name: HCV_API_ADDR
+              value: ":8080"
+            - name: HCV_GRPC_ADDR
+              value: ":9090"
+            - name: HCV_LOG_LEVEL
+              value: {{ .Values.config.logLevel }}
+            - name: HCV_LOG_FORMAT
+              value: {{ .Values.config.logFormat }}
+            - name: HCV_ETCD_ENDPOINTS
+              value: {{ .Values.config.etcdEndpoints | default (printf "%s-etcd:2379" .Release.Name) }}
+            - name: HCV_STORAGE_DRIVER
+              value: {{ .Values.config.storageDriver }}
+            - name: HCV_PERIPHERAL_DRIVER
+              value: {{ .Values.config.peripheralDriver }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}

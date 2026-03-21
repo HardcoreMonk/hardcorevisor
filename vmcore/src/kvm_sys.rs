@@ -13,8 +13,11 @@ const KVM_CHECK_EXTENSION: libc::c_ulong = 0xAE03;
 const KVM_GET_VCPU_MMAP_SIZE: libc::c_ulong = 0xAE04;
 const KVM_CREATE_VCPU: libc::c_ulong = 0xAE41;
 const KVM_SET_USER_MEMORY_REGION: libc::c_ulong = 0x4020AE46;
+const KVM_GET_DIRTY_LOG: libc::c_ulong = 0x4010AE42;
 #[allow(dead_code)]
 const KVM_RUN: libc::c_ulong = 0xAE80;
+
+const KVM_MEM_LOG_DIRTY_PAGES: u32 = 1;
 
 // KVM extension IDs
 const KVM_CAP_USER_MEMORY: libc::c_int = 3;
@@ -30,6 +33,14 @@ pub struct KvmUserspaceMemoryRegion {
     pub guest_phys_addr: u64,
     pub memory_size: u64,
     pub userspace_addr: u64,
+}
+
+/// KVM dirty log request (matches struct kvm_dirty_log)
+#[repr(C)]
+pub struct KvmDirtyLog {
+    pub slot: u32,
+    pub _padding: u32,
+    pub dirty_bitmap: *mut u64,
 }
 
 /// Error type for KVM operations
@@ -191,6 +202,52 @@ impl KvmVm {
         Ok(())
     }
 
+    /// Enable dirty page logging for a memory region.
+    pub fn enable_dirty_log(
+        &self,
+        slot: u32,
+        guest_phys_addr: u64,
+        memory_size: u64,
+        userspace_addr: u64,
+    ) -> Result<(), KvmSysError> {
+        let region = KvmUserspaceMemoryRegion {
+            slot,
+            flags: KVM_MEM_LOG_DIRTY_PAGES,
+            guest_phys_addr,
+            memory_size,
+            userspace_addr,
+        };
+        self.set_user_memory_region(&region)
+    }
+
+    /// Get the dirty page bitmap for a slot.
+    /// Returns a Vec<u64> bitmap where each bit represents one page.
+    pub fn get_dirty_log(&self, slot: u32, memory_size: u64) -> Result<Vec<u64>, KvmSysError> {
+        let page_count = (memory_size as usize).div_ceil(4096);
+        let bitmap_size = page_count.div_ceil(64);
+        let mut bitmap = vec![0u64; bitmap_size];
+
+        let dirty_log = KvmDirtyLog {
+            slot,
+            _padding: 0,
+            dirty_bitmap: bitmap.as_mut_ptr(),
+        };
+
+        ioctl(
+            self.as_raw_fd(),
+            KVM_GET_DIRTY_LOG,
+            &dirty_log as *const _ as libc::c_ulong,
+            "KVM_GET_DIRTY_LOG",
+        )?;
+
+        Ok(bitmap)
+    }
+
+    /// Count the number of dirty pages in a bitmap.
+    pub fn count_dirty_pages(bitmap: &[u64]) -> u64 {
+        bitmap.iter().map(|w| w.count_ones() as u64).sum()
+    }
+
     /// Create a vCPU.
     pub fn create_vcpu(&self, vcpu_id: u32, mmap_size: usize) -> Result<KvmVcpu, KvmSysError> {
         let vcpu_fd = ioctl(
@@ -291,6 +348,50 @@ mod tests {
         assert!(vcpu.as_raw_fd() > 0);
 
         // Cleanup
+        unsafe {
+            libc::munmap(guest_mem, mem_size);
+        }
+    }
+
+    #[test]
+    fn test_dirty_log() {
+        let sys = match KvmSystem::open() {
+            Ok(s) => s,
+            Err(KvmSysError::OpenFailed(_)) => {
+                eprintln!("SKIP: /dev/kvm not available");
+                return;
+            }
+            Err(e) => panic!("unexpected error: {e}"),
+        };
+        let vm = sys.create_vm().unwrap();
+
+        let mem_size: usize = 4096 * 4; // 4 pages
+        let guest_mem = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                mem_size,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        assert_ne!(guest_mem, libc::MAP_FAILED);
+
+        // Enable dirty logging
+        vm.enable_dirty_log(0, 0, mem_size as u64, guest_mem as u64)
+            .unwrap();
+
+        // Write to page 0 and 2
+        unsafe {
+            *(guest_mem as *mut u8) = 0x42;
+            *((guest_mem as *mut u8).add(4096 * 2)) = 0x43;
+        }
+
+        // Note: dirty log only works after KVM_RUN, so just verify the API works
+        let bitmap = vm.get_dirty_log(0, mem_size as u64).unwrap();
+        assert!(!bitmap.is_empty());
+
         unsafe {
             libc::munmap(guest_mem, mem_size);
         }

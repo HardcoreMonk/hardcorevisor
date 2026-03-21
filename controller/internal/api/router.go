@@ -243,7 +243,7 @@ func (svc *Services) handleCreateVM(w http.ResponseWriter, r *http.Request) {
 		Backend  string `json:"backend"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeError(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", err.Error())
 		return
 	}
 	if req.Name == "" {
@@ -258,7 +258,7 @@ func (svc *Services) handleCreateVM(w http.ResponseWriter, r *http.Request) {
 
 	vm, err := svc.Compute.CreateVM(req.Name, req.VCPUs, req.MemoryMB, req.Backend)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeError(w, http.StatusInternalServerError, ErrCodeInternal, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusCreated, vm)
@@ -267,12 +267,12 @@ func (svc *Services) handleCreateVM(w http.ResponseWriter, r *http.Request) {
 func (svc *Services) handleGetVM(w http.ResponseWriter, r *http.Request) {
 	handle, err := parseVMID(r)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeError(w, http.StatusBadRequest, ErrCodeBadRequest, err.Error())
 		return
 	}
 	vm, err := svc.Compute.GetVM(handle)
 	if err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		writeError(w, http.StatusNotFound, ErrCodeNotFound, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, vm)
@@ -281,11 +281,11 @@ func (svc *Services) handleGetVM(w http.ResponseWriter, r *http.Request) {
 func (svc *Services) handleDeleteVM(w http.ResponseWriter, r *http.Request) {
 	handle, err := parseVMID(r)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeError(w, http.StatusBadRequest, ErrCodeBadRequest, err.Error())
 		return
 	}
 	if err := svc.Compute.DestroyVM(handle); err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		writeError(w, http.StatusNotFound, ErrCodeNotFound, err.Error())
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -295,17 +295,17 @@ func (svc *Services) handleVMAction(action string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		handle, err := parseVMID(r)
 		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			writeError(w, http.StatusBadRequest, ErrCodeBadRequest, err.Error())
 			return
 		}
 		vm, err := svc.Compute.ActionVM(handle, action)
 		if err != nil {
 			// Check if it's a state transition error
 			if isStateError(err) {
-				writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+				writeError(w, http.StatusConflict, ErrCodeConflict, err.Error())
 				return
 			}
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+			writeError(w, http.StatusNotFound, ErrCodeNotFound, err.Error())
 			return
 		}
 		writeJSON(w, http.StatusOK, vm)
@@ -436,12 +436,16 @@ func (svc *Services) handleCreateVolume(w http.ResponseWriter, r *http.Request) 
 		Format    string `json:"format"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeError(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", err.Error())
+		return
+	}
+	if msg := validateRequired(map[string]string{"pool": req.Pool, "name": req.Name}); msg != "" {
+		writeError(w, http.StatusBadRequest, ErrCodeBadRequest, msg)
 		return
 	}
 	vol, err := svc.Storage.CreateVolume(req.Pool, req.Name, req.Format, req.SizeBytes)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeError(w, http.StatusBadRequest, ErrCodeBadRequest, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusCreated, vol)
@@ -562,12 +566,16 @@ func (svc *Services) handleCreateBackup(w http.ResponseWriter, r *http.Request) 
 		Pool   string `json:"pool"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeError(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", err.Error())
+		return
+	}
+	if msg := validateRequired(map[string]string{"vm_name": req.VMName, "pool": req.Pool}); msg != "" {
+		writeError(w, http.StatusBadRequest, ErrCodeBadRequest, msg)
 		return
 	}
 	b, err := svc.Backup.CreateBackup(req.VMID, req.VMName, req.Pool)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeError(w, http.StatusBadRequest, ErrCodeBadRequest, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusCreated, b)

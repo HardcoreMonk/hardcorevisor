@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-config
+data:
+  hcv.yaml: |
+    api:
+      addr: ":8080"
+    grpc:
+      addr: ":9090"
+    log:
+      level: {{ .Values.config.logLevel }}
+      format: {{ .Values.config.logFormat }}
+    etcd:
+      endpoints: {{ .Values.config.etcdEndpoints | default "" }}
+    storage:
+      driver: {{ .Values.config.storageDriver }}

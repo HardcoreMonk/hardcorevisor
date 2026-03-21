@@ -156,6 +156,35 @@ run_test "GET /api/v1/cluster/nodes" \
 run_test "GET /api/v1/nodes" \
     curl -sf http://localhost:8080/api/v1/nodes
 
+# Backup API
+run_test "POST /api/v1/backups (create)" \
+    curl -sf -X POST http://localhost:8080/api/v1/backups \
+        -H 'Content-Type: application/json' \
+        -d '{"vm_id":1,"vm_name":"smoke-test-vm","pool":"local-zfs"}'
+
+run_test "GET /api/v1/backups (list)" \
+    curl -sf http://localhost:8080/api/v1/backups
+
+# System
+run_test "GET /api/v1/system/stats" \
+    curl -sf http://localhost:8080/api/v1/system/stats
+
+run_test "GET /api/v1/api-info" \
+    curl -sf http://localhost:8080/api/v1/api-info
+
+# Network details
+run_test "GET /api/v1/network/vnets" \
+    curl -sf http://localhost:8080/api/v1/network/vnets
+
+run_test "GET /api/v1/network/firewall" \
+    curl -sf http://localhost:8080/api/v1/network/firewall
+
+# VM Migration
+run_test "POST /api/v1/vms/1/migrate" \
+    curl -sf -X POST http://localhost:8080/api/v1/vms/1/migrate \
+        -H 'Content-Type: application/json' \
+        -d '{"target_node":"node-02"}'
+
 echo ""
 
 # ── Phase 5: Container status ─────────────────────────
