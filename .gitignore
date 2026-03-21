@@ -6,6 +6,8 @@ Cargo.lock
 
 # ═══ Go ═══
 /controller/vendor/
+/controller/controller
+/controller/hcvctl
 
 # ═══ Build artifacts ═══
 *.o
