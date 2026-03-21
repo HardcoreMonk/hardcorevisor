@@ -98,7 +98,30 @@ services:
       - prometheus
     restart: unless-stopped
 
+  loki:
+    image: grafana/loki:3.0.0
+    container_name: hcv-loki
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./loki-config.yaml:/etc/loki/config.yaml:ro
+      - loki-data:/loki
+    command: -config.file=/etc/loki/config.yaml
+    restart: unless-stopped
+
+  promtail:
+    image: grafana/promtail:3.0.0
+    container_name: hcv-promtail
+    volumes:
+      - ./promtail-config.yaml:/etc/promtail/config.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    command: -config.file=/etc/promtail/config.yaml
+    depends_on:
+      - loki
+    restart: unless-stopped
+
 volumes:
   etcd-data:
   prometheus-data:
   grafana-data:
+  loki-data:

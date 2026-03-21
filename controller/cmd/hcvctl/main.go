@@ -337,7 +337,71 @@ To load fish completions:
 	templateDeployCmd.Flags().String("name", "", "Name for the new VM")
 	templateCmd.AddCommand(templateDeployCmd)
 
-	root.AddCommand(vmCmd, nodeCmd, versionCmd, storageCmd, networkCmd, deviceCmd, clusterCmd, completionCmd, backupCmd, statusCmd, shellCmd, templateCmd)
+	// ── image subcommand ──
+	imageCmd := &cobra.Command{Use: "image", Short: "Manage VM disk images"}
+
+	imageCmd.AddCommand(&cobra.Command{
+		Use:   "list",
+		Short: "List registered images",
+		RunE:  imageList,
+	})
+
+	imageRegisterCmd := &cobra.Command{
+		Use:   "register",
+		Short: "Register a new image",
+		RunE:  imageRegister,
+	}
+	imageRegisterCmd.Flags().String("name", "", "Image name")
+	imageRegisterCmd.Flags().String("format", "qcow2", "Image format (qcow2, raw, iso)")
+	imageRegisterCmd.Flags().String("path", "", "Path to image file")
+	imageRegisterCmd.Flags().String("os", "linux", "OS type (linux, windows)")
+	imageCmd.AddCommand(imageRegisterCmd)
+
+	imageDeleteCmd := &cobra.Command{
+		Use:   "delete",
+		Short: "Delete a registered image",
+		RunE:  imageDelete,
+	}
+	imageDeleteCmd.Flags().String("id", "", "Image ID to delete")
+	imageCmd.AddCommand(imageDeleteCmd)
+
+	// ── snapshot subcommand ──
+	snapshotCmd := &cobra.Command{Use: "snapshot", Short: "Manage VM snapshots"}
+
+	snapshotListCmd := &cobra.Command{
+		Use:   "list",
+		Short: "List snapshots",
+		RunE:  snapshotListCLI,
+	}
+	snapshotListCmd.Flags().Int32("vm-id", 0, "Filter by VM ID")
+	snapshotCmd.AddCommand(snapshotListCmd)
+
+	snapshotCreateCmd := &cobra.Command{
+		Use:   "create",
+		Short: "Create a VM snapshot",
+		RunE:  snapshotCreateCLI,
+	}
+	snapshotCreateCmd.Flags().Int32("vm-id", 0, "VM ID to snapshot")
+	snapshotCreateCmd.Flags().String("vm-name", "", "VM name")
+	snapshotCmd.AddCommand(snapshotCreateCmd)
+
+	snapshotDeleteCmd := &cobra.Command{
+		Use:   "delete",
+		Short: "Delete a snapshot",
+		RunE:  snapshotDeleteCLI,
+	}
+	snapshotDeleteCmd.Flags().String("id", "", "Snapshot ID to delete")
+	snapshotCmd.AddCommand(snapshotDeleteCmd)
+
+	snapshotRestoreCmd := &cobra.Command{
+		Use:   "restore",
+		Short: "Restore a VM from snapshot",
+		RunE:  snapshotRestoreCLI,
+	}
+	snapshotRestoreCmd.Flags().String("id", "", "Snapshot ID to restore")
+	snapshotCmd.AddCommand(snapshotRestoreCmd)
+
+	root.AddCommand(vmCmd, nodeCmd, versionCmd, storageCmd, networkCmd, deviceCmd, clusterCmd, completionCmd, backupCmd, statusCmd, shellCmd, templateCmd, imageCmd, snapshotCmd)
 
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
@@ -1458,6 +1522,184 @@ func templateDeploy(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	fmt.Printf("VM deployed from template '%s'.\n", id)
+	return nil
+}
+
+// ── Image handlers ───────────────────────────────────────
+
+func imageList(cmd *cobra.Command, args []string) error {
+	resp, err := apiGet("/api/v1/images")
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if err := checkResponse(resp); err != nil {
+		return err
+	}
+
+	var images []struct {
+		ID        string `json:"id"`
+		Name      string `json:"name"`
+		Format    string `json:"format"`
+		SizeBytes uint64 `json:"size_bytes"`
+		Path      string `json:"path"`
+		OSType    string `json:"os_type"`
+		CreatedAt int64  `json:"created_at"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&images); err != nil {
+		return fmt.Errorf("decode error: %w", err)
+	}
+
+	headers := []string{"ID", "NAME", "FORMAT", "SIZE", "OS", "PATH"}
+	var rows [][]string
+	for _, img := range images {
+		rows = append(rows, []string{
+			img.ID, img.Name, img.Format, formatBytes(img.SizeBytes), img.OSType, img.Path,
+		})
+	}
+	printOutput(images, headers, rows)
+	return nil
+}
+
+func imageRegister(cmd *cobra.Command, args []string) error {
+	name, _ := cmd.Flags().GetString("name")
+	format, _ := cmd.Flags().GetString("format")
+	path, _ := cmd.Flags().GetString("path")
+	osType, _ := cmd.Flags().GetString("os")
+
+	if name == "" {
+		return fmt.Errorf("--name is required")
+	}
+
+	body := map[string]interface{}{
+		"name":    name,
+		"format":  format,
+		"path":    path,
+		"os_type": osType,
+	}
+	resp, err := apiPost("/api/v1/images", body)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if err := checkResponse(resp); err != nil {
+		return err
+	}
+	fmt.Printf("Image '%s' registered.\n", name)
+	return nil
+}
+
+func imageDelete(cmd *cobra.Command, args []string) error {
+	id, _ := cmd.Flags().GetString("id")
+	if id == "" {
+		return fmt.Errorf("--id is required")
+	}
+
+	resp, err := apiDelete(fmt.Sprintf("/api/v1/images/%s", id))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if err := checkResponse(resp); err != nil {
+		return err
+	}
+	fmt.Printf("Image '%s' deleted.\n", id)
+	return nil
+}
+
+// ── Snapshot handlers ─────────────────────────────────────
+
+func snapshotListCLI(cmd *cobra.Command, args []string) error {
+	vmID, _ := cmd.Flags().GetInt32("vm-id")
+	path := "/api/v1/snapshots"
+	if vmID != 0 {
+		path += fmt.Sprintf("?vm_id=%d", vmID)
+	}
+	resp, err := apiGet(path)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if err := checkResponse(resp); err != nil {
+		return err
+	}
+
+	var snapshots []struct {
+		ID        string `json:"id"`
+		VMID      int32  `json:"vm_id"`
+		VMName    string `json:"vm_name"`
+		State     string `json:"state"`
+		CreatedAt int64  `json:"created_at"`
+		SizeBytes uint64 `json:"size_bytes"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&snapshots); err != nil {
+		return fmt.Errorf("decode error: %w", err)
+	}
+
+	headers := []string{"ID", "VM_ID", "VM_NAME", "STATE", "SIZE"}
+	var rows [][]string
+	for _, s := range snapshots {
+		rows = append(rows, []string{
+			s.ID, fmt.Sprintf("%d", s.VMID), s.VMName, s.State, formatBytes(s.SizeBytes),
+		})
+	}
+	printOutput(snapshots, headers, rows)
+	return nil
+}
+
+func snapshotCreateCLI(cmd *cobra.Command, args []string) error {
+	vmID, _ := cmd.Flags().GetInt32("vm-id")
+	vmName, _ := cmd.Flags().GetString("vm-name")
+
+	body := map[string]interface{}{
+		"vm_id":   vmID,
+		"vm_name": vmName,
+	}
+	resp, err := apiPost("/api/v1/snapshots", body)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if err := checkResponse(resp); err != nil {
+		return err
+	}
+	fmt.Printf("Snapshot created for VM '%s' (ID %d).\n", vmName, vmID)
+	return nil
+}
+
+func snapshotDeleteCLI(cmd *cobra.Command, args []string) error {
+	id, _ := cmd.Flags().GetString("id")
+	if id == "" {
+		return fmt.Errorf("--id is required")
+	}
+
+	resp, err := apiDelete(fmt.Sprintf("/api/v1/snapshots/%s", id))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if err := checkResponse(resp); err != nil {
+		return err
+	}
+	fmt.Printf("Snapshot '%s' deleted.\n", id)
+	return nil
+}
+
+func snapshotRestoreCLI(cmd *cobra.Command, args []string) error {
+	id, _ := cmd.Flags().GetString("id")
+	if id == "" {
+		return fmt.Errorf("--id is required")
+	}
+
+	resp, err := apiPost(fmt.Sprintf("/api/v1/snapshots/%s/restore", id), nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if err := checkResponse(resp); err != nil {
+		return err
+	}
+	fmt.Printf("Snapshot '%s' restore initiated.\n", id)
 	return nil
 }
 

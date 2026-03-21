@@ -17,8 +17,10 @@ import (
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/backup"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/compute"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/ha"
+	"github.com/HardcoreMonk/hardcorevisor/controller/internal/image"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/network"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/peripheral"
+	"github.com/HardcoreMonk/hardcorevisor/controller/internal/snapshot"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/storage"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/template"
 	"github.com/HardcoreMonk/hardcorevisor/controller/pkg/ffi"
@@ -49,6 +51,8 @@ func setupE2E(t *testing.T) (*httptest.Server, func()) {
 		HA:         ha.NewService(),
 		Backup:     backup.NewService(storageSvc),
 		Template:   template.NewService(),
+		Snapshot:   snapshot.NewService(),
+		Image:      image.NewService("/tmp/hcv-images"),
 		Version: api.VersionInfo{
 			Version:   "test-e2e",
 			GitCommit: "abc123",
@@ -106,8 +110,9 @@ func TestE2E_FullVMLifecycle(t *testing.T) {
 	// 5. List VMs (should have 2)
 	resp = httpGet(t, base+"/api/v1/vms")
 	assertStatus(t, resp, 200)
-	var vms []map[string]any
-	decodeJSON(t, resp, &vms)
+	var vmPage map[string]any
+	decodeJSON(t, resp, &vmPage)
+	vms := vmPage["data"].([]any)
 	if len(vms) < 2 {
 		t.Fatalf("expected at least 2 VMs, got %d", len(vms))
 	}
@@ -158,6 +163,18 @@ func TestE2E_FullVMLifecycle(t *testing.T) {
 	// 14. List should be empty (for our created VMs)
 	resp = httpGet(t, base+"/api/v1/vms")
 	assertStatus(t, resp, 200)
+}
+
+// decodePaginatedData is a helper to extract the data array from a PaginatedResponse.
+func decodePaginatedData(t *testing.T, resp *http.Response) ([]any, map[string]any) {
+	t.Helper()
+	var page map[string]any
+	decodeJSON(t, resp, &page)
+	data, ok := page["data"].([]any)
+	if !ok {
+		t.Fatal("expected data field to be an array")
+	}
+	return data, page
 }
 
 // ── E2E: Invalid State Transitions ───────────────────────
@@ -291,10 +308,9 @@ func TestE2E_MixedBackends(t *testing.T) {
 	// List should contain both
 	resp := httpGet(t, base+"/api/v1/vms")
 	assertStatus(t, resp, 200)
-	var vms []map[string]any
-	decodeJSON(t, resp, &vms)
-	if len(vms) < 2 {
-		t.Fatalf("expected at least 2 VMs, got %d", len(vms))
+	mixedVMs, _ := decodePaginatedData(t, resp)
+	if len(mixedVMs) < 2 {
+		t.Fatalf("expected at least 2 VMs, got %d", len(mixedVMs))
 	}
 
 	// Both should be independently controllable
@@ -352,10 +368,9 @@ func TestE2E_ConcurrentVMCreation(t *testing.T) {
 	// Verify all created
 	resp := httpGet(t, base+"/api/v1/vms")
 	assertStatus(t, resp, 200)
-	var vms []map[string]any
-	decodeJSON(t, resp, &vms)
-	if len(vms) < count {
-		t.Errorf("expected at least %d VMs, got %d", count, len(vms))
+	concurrentVMs, _ := decodePaginatedData(t, resp)
+	if len(concurrentVMs) < count {
+		t.Errorf("expected at least %d VMs, got %d", count, len(concurrentVMs))
 	}
 }
 
@@ -433,9 +448,8 @@ func TestE2E_BackupLifecycle(t *testing.T) {
 	// List backups
 	resp = httpGet(t, base+"/api/v1/backups")
 	assertStatus(t, resp, 200)
-	var backups []map[string]any
-	decodeJSON(t, resp, &backups)
-	if len(backups) < 1 {
+	backupData, _ := decodePaginatedData(t, resp)
+	if len(backupData) < 1 {
 		t.Fatal("expected at least 1 backup")
 	}
 
@@ -655,10 +669,9 @@ func TestE2E_TemplateLifecycle(t *testing.T) {
 	// 1. List default templates (should have 3)
 	resp := httpGet(t, base+"/api/v1/templates")
 	assertStatus(t, resp, 200)
-	var templates []map[string]any
-	decodeJSON(t, resp, &templates)
-	if len(templates) < 3 {
-		t.Fatalf("expected at least 3 default templates, got %d", len(templates))
+	tplData, _ := decodePaginatedData(t, resp)
+	if len(tplData) < 3 {
+		t.Fatalf("expected at least 3 default templates, got %d", len(tplData))
 	}
 
 	// 2. Get a specific template
@@ -711,6 +724,191 @@ func TestE2E_TemplateLifecycle(t *testing.T) {
 
 	// Cleanup deployed VM
 	httpDelete(t, base+"/api/v1/vms/"+vmID)
+}
+
+// ── E2E: Pagination ───────────────────────────────────────
+
+func TestE2E_Pagination(t *testing.T) {
+	srv, cleanup := setupE2E(t)
+	defer cleanup()
+	base := srv.URL
+
+	// Create 5 VMs
+	for i := 0; i < 5; i++ {
+		createVM(t, base, map[string]any{
+			"name": fmt.Sprintf("page-vm-%d", i), "vcpus": 1, "memory_mb": 256,
+		})
+	}
+
+	// Get page 1 (limit=2)
+	resp := httpGet(t, base+"/api/v1/vms?limit=2&offset=0")
+	assertStatus(t, resp, 200)
+	var page map[string]any
+	decodeJSON(t, resp, &page)
+	if int(page["total_count"].(float64)) < 5 {
+		t.Fatalf("expected total_count >= 5, got %v", page["total_count"])
+	}
+	data := page["data"].([]any)
+	if len(data) != 2 {
+		t.Fatalf("expected 2 items, got %d", len(data))
+	}
+
+	// Get page 2
+	resp = httpGet(t, base+"/api/v1/vms?limit=2&offset=2")
+	assertStatus(t, resp, 200)
+	decodeJSON(t, resp, &page)
+	data2 := page["data"].([]any)
+	if len(data2) != 2 {
+		t.Fatalf("expected 2 items on page 2, got %d", len(data2))
+	}
+
+	// Get page 3 (only 1 remaining)
+	resp = httpGet(t, base+"/api/v1/vms?limit=2&offset=4")
+	assertStatus(t, resp, 200)
+	decodeJSON(t, resp, &page)
+	data3 := page["data"].([]any)
+	if len(data3) != 1 {
+		t.Fatalf("expected 1 item on page 3, got %d", len(data3))
+	}
+
+	// Default pagination (no params) should return all
+	resp = httpGet(t, base+"/api/v1/vms")
+	assertStatus(t, resp, 200)
+	decodeJSON(t, resp, &page)
+	allData := page["data"].([]any)
+	if len(allData) < 5 {
+		t.Fatalf("expected >= 5 items with default pagination, got %d", len(allData))
+	}
+	if int(page["offset"].(float64)) != 0 {
+		t.Fatalf("expected offset 0, got %v", page["offset"])
+	}
+}
+
+// ── E2E: Snapshot Lifecycle ───────────────────────────────
+
+func TestE2E_SnapshotLifecycle(t *testing.T) {
+	srv, cleanup := setupE2E(t)
+	defer cleanup()
+	base := srv.URL
+
+	// Create a VM first
+	vm := createVM(t, base, map[string]any{"name": "snap-test-vm", "vcpus": 2, "memory_mb": 4096})
+	vmID := vm["id"].(float64)
+
+	// 1. Create snapshot
+	body, _ := json.Marshal(map[string]any{
+		"vm_id": vmID, "vm_name": "snap-test-vm",
+	})
+	resp := httpPostRaw(t, base+"/api/v1/snapshots", body)
+	assertStatus(t, resp, 201)
+	var snap map[string]any
+	decodeJSON(t, resp, &snap)
+	assertEqual(t, snap["vm_name"].(string), "snap-test-vm")
+	assertEqual(t, snap["state"].(string), "created")
+	snapID := snap["id"].(string)
+
+	// 2. Create a second snapshot
+	body, _ = json.Marshal(map[string]any{
+		"vm_id": vmID, "vm_name": "snap-test-vm",
+	})
+	resp = httpPostRaw(t, base+"/api/v1/snapshots", body)
+	assertStatus(t, resp, 201)
+
+	// 3. List snapshots (filter by vm_id)
+	resp = httpGet(t, base+fmt.Sprintf("/api/v1/snapshots?vm_id=%.0f", vmID))
+	assertStatus(t, resp, 200)
+	var snapshots []map[string]any
+	decodeJSON(t, resp, &snapshots)
+	if len(snapshots) < 2 {
+		t.Fatalf("expected at least 2 snapshots, got %d", len(snapshots))
+	}
+
+	// 4. Get snapshot
+	resp = httpGet(t, base+"/api/v1/snapshots/"+snapID)
+	assertStatus(t, resp, 200)
+	var snapDetail map[string]any
+	decodeJSON(t, resp, &snapDetail)
+	assertEqual(t, snapDetail["id"].(string), snapID)
+
+	// 5. Restore snapshot
+	resp = httpPost(t, base+"/api/v1/snapshots/"+snapID+"/restore", nil)
+	assertStatus(t, resp, 200)
+	decodeJSON(t, resp, &snapDetail)
+	assertEqual(t, snapDetail["state"].(string), "restoring")
+
+	// 6. Delete snapshot
+	resp = httpDelete(t, base+"/api/v1/snapshots/"+snapID)
+	assertStatus(t, resp, 204)
+
+	// 7. Verify deleted (404)
+	resp = httpGet(t, base+"/api/v1/snapshots/"+snapID)
+	assertStatus(t, resp, 404)
+
+	// 8. Non-existent snapshot (404)
+	resp = httpGet(t, base+"/api/v1/snapshots/snap-999")
+	assertStatus(t, resp, 404)
+
+	// Cleanup VM
+	httpDelete(t, base+"/api/v1/vms/"+fmt.Sprintf("%.0f", vmID))
+}
+
+// ── E2E: Image Registry ──────────────────────────────────
+
+func TestE2E_ImageRegistry(t *testing.T) {
+	srv, cleanup := setupE2E(t)
+	defer cleanup()
+	base := srv.URL
+
+	// 1. List default images (should have 3)
+	resp := httpGet(t, base+"/api/v1/images")
+	assertStatus(t, resp, 200)
+	var images []map[string]any
+	decodeJSON(t, resp, &images)
+	if len(images) < 3 {
+		t.Fatalf("expected at least 3 default images, got %d", len(images))
+	}
+
+	// 2. Get a specific image
+	resp = httpGet(t, base+"/api/v1/images/img-1")
+	assertStatus(t, resp, 200)
+	var img map[string]any
+	decodeJSON(t, resp, &img)
+	assertEqual(t, img["name"].(string), "ubuntu-24.04")
+	assertEqual(t, img["format"].(string), "qcow2")
+	assertEqual(t, img["os_type"].(string), "linux")
+
+	// 3. Register a new image
+	body, _ := json.Marshal(map[string]any{
+		"name": "fedora-41", "format": "qcow2",
+		"path": "/tmp/hcv-images/fedora-41.qcow2", "os_type": "linux",
+	})
+	resp = httpPostRaw(t, base+"/api/v1/images", body)
+	assertStatus(t, resp, 201)
+	var newImg map[string]any
+	decodeJSON(t, resp, &newImg)
+	assertEqual(t, newImg["name"].(string), "fedora-41")
+	assertEqual(t, newImg["format"].(string), "qcow2")
+	newImgID := newImg["id"].(string)
+
+	// 4. List images — should now have 4
+	resp = httpGet(t, base+"/api/v1/images")
+	assertStatus(t, resp, 200)
+	decodeJSON(t, resp, &images)
+	if len(images) < 4 {
+		t.Fatalf("expected at least 4 images after register, got %d", len(images))
+	}
+
+	// 5. Delete the new image
+	resp = httpDelete(t, base+"/api/v1/images/"+newImgID)
+	assertStatus(t, resp, 204)
+
+	// 6. Verify deleted (404)
+	resp = httpGet(t, base+"/api/v1/images/"+newImgID)
+	assertStatus(t, resp, 404)
+
+	// 7. Delete non-existent image (404)
+	resp = httpDelete(t, base+"/api/v1/images/img-999")
+	assertStatus(t, resp, 404)
 }
 
 // ═══ HTTP Helpers ════════════════════════════════════════

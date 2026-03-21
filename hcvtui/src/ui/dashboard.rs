@@ -32,6 +32,12 @@ pub fn render(frame: &mut Frame, app: &App) {
         ConnStatus::Error => Span::styled("● Error", Style::default().fg(Color::Red)),
     };
 
+    let ws_indicator = if app.ws_available {
+        Span::styled("WS Ready", Style::default().fg(Color::Green))
+    } else {
+        Span::styled("WS N/A", Style::default().fg(Color::DarkGray))
+    };
+
     let title = Paragraph::new(Line::from(vec![
         Span::styled(
             " HardCoreVisor ",
@@ -43,6 +49,8 @@ pub fn render(frame: &mut Frame, app: &App) {
         Span::styled("Dashboard", Style::default().fg(Color::Yellow)),
         Span::raw(" │ "),
         conn_indicator,
+        Span::raw(" │ "),
+        ws_indicator,
         Span::raw(" │ "),
         Span::styled("r", Style::default().fg(Color::Green)),
         Span::raw(" refresh  "),
@@ -257,16 +265,28 @@ fn render_status_panel(frame: &mut Frame, app: &App, area: ratatui::layout::Rect
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Yellow));
 
-    let mut lines = vec![Line::from(vec![
-        Span::styled("  API: ", Style::default().fg(Color::DarkGray)),
-        match app.conn_status {
-            ConnStatus::Connected => Span::styled("Connected", Style::default().fg(Color::Green)),
-            ConnStatus::Disconnected => {
-                Span::styled("Disconnected", Style::default().fg(Color::DarkGray))
-            }
-            ConnStatus::Error => Span::styled("Error", Style::default().fg(Color::Red)),
-        },
-    ])];
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled("  API: ", Style::default().fg(Color::DarkGray)),
+            match app.conn_status {
+                ConnStatus::Connected => {
+                    Span::styled("Connected", Style::default().fg(Color::Green))
+                }
+                ConnStatus::Disconnected => {
+                    Span::styled("Disconnected", Style::default().fg(Color::DarkGray))
+                }
+                ConnStatus::Error => Span::styled("Error", Style::default().fg(Color::Red)),
+            },
+        ]),
+        Line::from(vec![
+            Span::styled("  WS:  ", Style::default().fg(Color::DarkGray)),
+            if app.ws_available {
+                Span::styled("Ready", Style::default().fg(Color::Green))
+            } else {
+                Span::styled("Unavailable", Style::default().fg(Color::DarkGray))
+            },
+        ]),
+    ];
 
     if let Some(err) = &app.last_error {
         lines.push(Line::from(""));

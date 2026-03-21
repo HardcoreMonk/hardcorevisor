@@ -314,6 +314,17 @@ impl ApiClient {
             .await?)
     }
 
+    /// Check if WebSocket endpoint is available via HEAD request to /ws
+    pub async fn check_ws(&self) -> bool {
+        let ws_url = self.base_url.replace("/api/v1", "/ws");
+        self.client
+            .head(&ws_url)
+            .timeout(std::time::Duration::from_secs(1))
+            .send()
+            .await
+            .is_ok()
+    }
+
     /// Create a VM
     #[allow(dead_code)]
     pub async fn create_vm(

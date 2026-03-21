@@ -20,6 +20,7 @@ import (
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/config"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/grpcapi"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/ha"
+	"github.com/HardcoreMonk/hardcorevisor/controller/internal/image"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/logging"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/network"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/peripheral"
@@ -75,9 +76,13 @@ func main() {
 	case "zfs":
 		slog.Info("Using ZFS storage driver")
 		storageSvc = storage.NewServiceWithDriver(&storage.ZFSDriver{})
+	case "ceph":
+		slog.Info("Using Ceph RBD storage driver", "pool", cfg.Storage.CephPool)
+		storageSvc = storage.NewServiceWithDriver(storage.NewCephDriver(cfg.Storage.CephPool))
 	default:
 		storageSvc = storage.NewService()
 	}
+	imageSvc := image.NewService("/var/lib/hcv/images")
 	networkSvc := network.NewService()
 	var peripheralSvc *peripheral.Service
 	switch cfg.Peripheral.Driver {
@@ -110,6 +115,7 @@ func main() {
 		Peripheral: peripheralSvc,
 		HA:         haSvc,
 		Backup:     backupSvc,
+		Image:      imageSvc,
 		EventHub:   eventHub,
 		Version: api.VersionInfo{
 			Version:   version,

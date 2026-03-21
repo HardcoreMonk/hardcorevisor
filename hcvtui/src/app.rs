@@ -99,6 +99,10 @@ pub struct App {
     #[allow(dead_code)]
     pub log_scroll: u16,
 
+    // WebSocket readiness indicator
+    pub ws_available: bool,
+    ws_check_done: bool,
+
     // Polling
     last_poll: Instant,
     poll_interval: Duration,
@@ -132,6 +136,8 @@ impl App {
             show_create_form: false,
             create_form: CreateFormState::new(),
             log_scroll: 0,
+            ws_available: false,
+            ws_check_done: false,
             last_poll: Instant::now() - Duration::from_secs(10), // force immediate first poll
             poll_interval: Duration::from_secs(2),
         }
@@ -259,6 +265,15 @@ impl App {
                     ver.product, ver.version
                 ));
                 self.version = ver;
+            }
+        }
+
+        // Check WebSocket availability once after connection is established
+        if !self.ws_check_done && self.conn_status == ConnStatus::Connected {
+            self.ws_available = self.client.check_ws().await;
+            self.ws_check_done = true;
+            if self.ws_available {
+                self.push_log("[INFO] WebSocket endpoint available (WS Ready)".to_string());
             }
         }
 

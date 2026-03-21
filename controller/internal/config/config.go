@@ -21,7 +21,8 @@ type Config struct {
 
 // StorageConfig holds storage backend settings.
 type StorageConfig struct {
-	Driver string `yaml:"driver"` // "memory" (default), "zfs"
+	Driver   string `yaml:"driver"`    // "memory" (default), "zfs", "ceph"
+	CephPool string `yaml:"ceph_pool"` // Ceph pool name (default: "rbd")
 }
 
 // PeripheralConfig holds peripheral backend settings.
@@ -119,6 +120,9 @@ func Load(path string) (*Config, error) {
 	}
 	if v := os.Getenv("HCV_PERIPHERAL_DRIVER"); v != "" {
 		cfg.Peripheral.Driver = v
+	}
+	if v := os.Getenv("HCV_CEPH_POOL"); v != "" {
+		cfg.Storage.CephPool = v
 	}
 
 	return cfg, nil

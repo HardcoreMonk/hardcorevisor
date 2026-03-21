@@ -20,9 +20,11 @@ import (
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/backup"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/compute"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/ha"
+	"github.com/HardcoreMonk/hardcorevisor/controller/internal/image"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/metrics"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/network"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/peripheral"
+	"github.com/HardcoreMonk/hardcorevisor/controller/internal/snapshot"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/storage"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/template"
 	"github.com/HardcoreMonk/hardcorevisor/controller/pkg/ffi"
@@ -45,6 +47,8 @@ type Services struct {
 	HA         *ha.Service
 	Backup     *backup.Service
 	Template   *template.Service
+	Snapshot   *snapshot.Service
+	Image      *image.Service
 	Version    VersionInfo
 	EventHub   *EventHub
 }
@@ -110,6 +114,23 @@ func NewRouter(svc *Services, rbacUsers ...map[string]auth.RBACUser) http.Handle
 			mux.HandleFunc("GET /api/v1/templates/{id}", svc.handleGetTemplate)
 			mux.HandleFunc("DELETE /api/v1/templates/{id}", svc.handleDeleteTemplate)
 			mux.HandleFunc("POST /api/v1/templates/{id}/deploy", svc.handleDeployTemplate)
+		}
+
+		// Snapshot
+		if svc.Snapshot != nil {
+			mux.HandleFunc("GET /api/v1/snapshots", svc.handleListSnapshots)
+			mux.HandleFunc("POST /api/v1/snapshots", svc.handleCreateSnapshot)
+			mux.HandleFunc("GET /api/v1/snapshots/{id}", svc.handleGetSnapshot)
+			mux.HandleFunc("DELETE /api/v1/snapshots/{id}", svc.handleDeleteSnapshot)
+			mux.HandleFunc("POST /api/v1/snapshots/{id}/restore", svc.handleRestoreSnapshot)
+		}
+
+		// Image Registry
+		if svc.Image != nil {
+			mux.HandleFunc("GET /api/v1/images", svc.handleListImages)
+			mux.HandleFunc("POST /api/v1/images", svc.handleRegisterImage)
+			mux.HandleFunc("GET /api/v1/images/{id}", svc.handleGetImage)
+			mux.HandleFunc("DELETE /api/v1/images/{id}", svc.handleDeleteImage)
 		}
 
 		// Webhook
@@ -257,9 +278,18 @@ func (svc *Services) handleVersion(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
-func (svc *Services) handleListVMs(w http.ResponseWriter, _ *http.Request) {
+func (svc *Services) handleListVMs(w http.ResponseWriter, r *http.Request) {
 	vms := svc.Compute.ListVMs()
-	writeJSON(w, http.StatusOK, vms)
+	offset, limit := parsePagination(r)
+	total := len(vms)
+	if offset > total {
+		offset = total
+	}
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	writeJSON(w, http.StatusOK, paginate(vms[offset:end], total, offset, limit))
 }
 
 func (svc *Services) handleCreateVM(w http.ResponseWriter, r *http.Request) {
@@ -582,8 +612,18 @@ func handleStubList(name string) http.HandlerFunc {
 
 // ── Backup Handlers ──────────────────────────────────
 
-func (svc *Services) handleListBackups(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, svc.Backup.ListBackups())
+func (svc *Services) handleListBackups(w http.ResponseWriter, r *http.Request) {
+	backups := svc.Backup.ListBackups()
+	offset, limit := parsePagination(r)
+	total := len(backups)
+	if offset > total {
+		offset = total
+	}
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	writeJSON(w, http.StatusOK, paginate(backups[offset:end], total, offset, limit))
 }
 
 func (svc *Services) handleCreateBackup(w http.ResponseWriter, r *http.Request) {
@@ -629,8 +669,18 @@ func (svc *Services) handleDeleteBackup(w http.ResponseWriter, r *http.Request) 
 
 // ── Template Handlers ────────────────────────────────
 
-func (svc *Services) handleListTemplates(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, svc.Template.List())
+func (svc *Services) handleListTemplates(w http.ResponseWriter, r *http.Request) {
+	templates := svc.Template.List()
+	offset, limit := parsePagination(r)
+	total := len(templates)
+	if offset > total {
+		offset = total
+	}
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	writeJSON(w, http.StatusOK, paginate(templates[offset:end], total, offset, limit))
 }
 
 func (svc *Services) handleCreateTemplate(w http.ResponseWriter, r *http.Request) {
@@ -701,6 +751,119 @@ func (svc *Services) handleDeployTemplate(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusCreated, vm)
+}
+
+// ── Snapshot Handlers ─────────────────────────────────
+
+func (svc *Services) handleListSnapshots(w http.ResponseWriter, r *http.Request) {
+	var vmID int32
+	if idStr := r.URL.Query().Get("vm_id"); idStr != "" {
+		id, err := strconv.ParseInt(idStr, 10, 32)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid vm_id")
+			return
+		}
+		vmID = int32(id)
+	}
+	writeJSON(w, http.StatusOK, svc.Snapshot.List(vmID))
+}
+
+func (svc *Services) handleCreateSnapshot(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		VMID   int32  `json:"vm_id"`
+		VMName string `json:"vm_name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", err.Error())
+		return
+	}
+	if req.VMName == "" {
+		writeError(w, http.StatusBadRequest, ErrCodeBadRequest, "vm_name is required")
+		return
+	}
+	snap, err := svc.Snapshot.Create(req.VMID, req.VMName)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, ErrCodeBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, snap)
+}
+
+func (svc *Services) handleGetSnapshot(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	snap, err := svc.Snapshot.Get(id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, ErrCodeNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, snap)
+}
+
+func (svc *Services) handleDeleteSnapshot(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := svc.Snapshot.Delete(id); err != nil {
+		writeError(w, http.StatusNotFound, ErrCodeNotFound, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (svc *Services) handleRestoreSnapshot(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	snap, err := svc.Snapshot.Restore(id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, ErrCodeNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, snap)
+}
+
+// ── Image Handlers ────────────────────────────────────
+
+func (svc *Services) handleListImages(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, svc.Image.List())
+}
+
+func (svc *Services) handleRegisterImage(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name   string `json:"name"`
+		Format string `json:"format"`
+		Path   string `json:"path"`
+		OSType string `json:"os_type"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", err.Error())
+		return
+	}
+	if msg := validateRequired(map[string]string{"name": req.Name, "format": req.Format}); msg != "" {
+		writeError(w, http.StatusBadRequest, ErrCodeBadRequest, msg)
+		return
+	}
+	img, err := svc.Image.Register(req.Name, req.Format, req.Path, req.OSType)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, ErrCodeBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, img)
+}
+
+func (svc *Services) handleGetImage(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	img, err := svc.Image.Get(id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, ErrCodeNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, img)
+}
+
+func (svc *Services) handleDeleteImage(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := svc.Image.Delete(id); err != nil {
+		writeError(w, http.StatusNotFound, ErrCodeNotFound, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // ── Webhook Handlers ─────────────────────────────────
