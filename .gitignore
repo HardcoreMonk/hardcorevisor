@@ -35,9 +35,12 @@ deploy/data/
 # ═══ Coverage ═══
 *.profraw
 *.profdata
-coverage.out
-coverage.html
+*.html
+controller/coverage.out
 tarpaulin-report.html
+
+# ═══ Documentation ═══
+docs/book-output/
 
 # ═══ Generated ═══
 controller/pkg/proto/*pb/*.go

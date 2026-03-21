@@ -61,11 +61,23 @@ tui:
 
 # Code coverage (Linux only)
 rust-coverage:
-    cargo tarpaulin --workspace --out Html --output-dir target/coverage
+    cargo tarpaulin --workspace --out Html --output-dir target/coverage -- --test-threads=1
 
 # Expand macros for debugging
 rust-expand crate:
     cargo expand -p {{crate}}
+
+# ═══════════════════════════════════════════════════════════
+# Documentation
+# ═══════════════════════════════════════════════════════════
+
+# Build documentation site
+docs:
+    cd docs/book && mdbook build
+
+# Serve documentation locally
+docs-serve:
+    cd docs/book && mdbook serve
 
 # ═══════════════════════════════════════════════════════════
 # Go Recipes
@@ -214,6 +226,16 @@ stack-test:
 stack-test-keep:
     chmod +x scripts/stack-smoke-test.sh
     ./scripts/stack-smoke-test.sh --build
+
+# ═══════════════════════════════════════════════════════════
+# Coverage
+# ═══════════════════════════════════════════════════════════
+
+# Run Go code coverage
+go-coverage:
+    cd controller && GOTOOLCHAIN=local go test -coverprofile=coverage.out -count=1 ./...
+    cd controller && GOTOOLCHAIN=local go tool cover -html=coverage.out -o coverage.html
+    @echo "Go coverage report: controller/coverage.html"
 
 # ═══════════════════════════════════════════════════════════
 # Security
