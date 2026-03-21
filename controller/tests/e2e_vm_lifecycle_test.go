@@ -406,6 +406,155 @@ func TestE2E_MiddlewareChain(t *testing.T) {
 	}
 }
 
+// ── E2E: Backup Lifecycle ─────────────────────────────────
+
+func TestE2E_BackupLifecycle(t *testing.T) {
+	srv, cleanup := setupE2E(t)
+	defer cleanup()
+	base := srv.URL
+
+	// Create a VM first
+	vm := createVM(t, base, map[string]any{"name": "backup-test", "vcpus": 2, "memory_mb": 4096})
+	vmID := fmt.Sprintf("%.0f", vm["id"].(float64))
+
+	// Create backup
+	body, _ := json.Marshal(map[string]any{
+		"vm_id": vm["id"], "vm_name": "backup-test", "pool": "local-zfs",
+	})
+	resp := httpPostRaw(t, base+"/api/v1/backups", body)
+	assertStatus(t, resp, 201)
+	var backup map[string]any
+	decodeJSON(t, resp, &backup)
+	assertEqual(t, backup["vm_name"].(string), "backup-test")
+	backupID := backup["id"].(string)
+
+	// List backups
+	resp = httpGet(t, base+"/api/v1/backups")
+	assertStatus(t, resp, 200)
+	var backups []map[string]any
+	decodeJSON(t, resp, &backups)
+	if len(backups) < 1 {
+		t.Fatal("expected at least 1 backup")
+	}
+
+	// Get backup
+	resp = httpGet(t, base+"/api/v1/backups/"+backupID)
+	assertStatus(t, resp, 200)
+
+	// Delete backup
+	resp = httpDelete(t, base+"/api/v1/backups/"+backupID)
+	assertStatus(t, resp, 204)
+
+	// Verify deleted
+	resp = httpGet(t, base+"/api/v1/backups/"+backupID)
+	assertStatus(t, resp, 404)
+
+	// Cleanup VM
+	httpDelete(t, base+"/api/v1/vms/"+vmID)
+}
+
+// ── E2E: Storage CRUD ────────────────────────────────────
+
+func TestE2E_StorageCRUD(t *testing.T) {
+	srv, cleanup := setupE2E(t)
+	defer cleanup()
+	base := srv.URL
+
+	// List pools
+	resp := httpGet(t, base+"/api/v1/storage/pools")
+	assertStatus(t, resp, 200)
+	var pools []map[string]any
+	decodeJSON(t, resp, &pools)
+	if len(pools) < 1 {
+		t.Fatal("expected at least 1 pool")
+	}
+
+	// Create volume
+	body, _ := json.Marshal(map[string]any{
+		"pool": "local-zfs", "name": "test-vol", "size_bytes": 1073741824, "format": "qcow2",
+	})
+	resp = httpPostRaw(t, base+"/api/v1/storage/volumes", body)
+	assertStatus(t, resp, 201)
+	var vol map[string]any
+	decodeJSON(t, resp, &vol)
+	assertEqual(t, vol["name"].(string), "test-vol")
+	volID := vol["id"].(string)
+
+	// List volumes
+	resp = httpGet(t, base+"/api/v1/storage/volumes")
+	assertStatus(t, resp, 200)
+
+	// Delete volume
+	resp = httpDelete(t, base+"/api/v1/storage/volumes/"+volID)
+	assertStatus(t, resp, 204)
+}
+
+// ── E2E: Device Attach/Detach ────────────────────────────
+
+func TestE2E_DeviceAttachDetach(t *testing.T) {
+	srv, cleanup := setupE2E(t)
+	defer cleanup()
+	base := srv.URL
+
+	// List devices
+	resp := httpGet(t, base+"/api/v1/devices")
+	assertStatus(t, resp, 200)
+	var devices []map[string]any
+	decodeJSON(t, resp, &devices)
+	if len(devices) < 1 {
+		t.Fatal("expected at least 1 device")
+	}
+
+	// Create VM for attach
+	vm := createVM(t, base, map[string]any{"name": "device-test", "vcpus": 1, "memory_mb": 256})
+	vmID := vm["id"].(float64)
+
+	// Attach device
+	body, _ := json.Marshal(map[string]any{"vm_handle": vmID})
+	resp = httpPostRaw(t, base+"/api/v1/devices/gpu-0/attach", body)
+	assertStatus(t, resp, 200)
+
+	// Detach device
+	resp = httpPost(t, base+"/api/v1/devices/gpu-0/detach", nil)
+	assertStatus(t, resp, 200)
+
+	// Cleanup
+	httpDelete(t, base+"/api/v1/vms/"+fmt.Sprintf("%.0f", vmID))
+}
+
+// ── E2E: Cluster Operations ─────────────────────────────
+
+func TestE2E_ClusterOperations(t *testing.T) {
+	srv, cleanup := setupE2E(t)
+	defer cleanup()
+	base := srv.URL
+
+	// Cluster status
+	resp := httpGet(t, base+"/api/v1/cluster/status")
+	assertStatus(t, resp, 200)
+	var status map[string]any
+	decodeJSON(t, resp, &status)
+	if !status["quorum"].(bool) {
+		t.Fatal("expected quorum")
+	}
+
+	// Cluster nodes
+	resp = httpGet(t, base+"/api/v1/cluster/nodes")
+	assertStatus(t, resp, 200)
+	var nodes []map[string]any
+	decodeJSON(t, resp, &nodes)
+	if len(nodes) < 3 {
+		t.Fatalf("expected 3 nodes, got %d", len(nodes))
+	}
+
+	// Fence a node
+	body, _ := json.Marshal(map[string]any{
+		"reason": "test", "action": "reboot",
+	})
+	resp = httpPostRaw(t, base+"/api/v1/cluster/fence/node-03", body)
+	assertStatus(t, resp, 200)
+}
+
 // ═══ HTTP Helpers ════════════════════════════════════════
 
 func httpGet(t *testing.T, url string) *http.Response {

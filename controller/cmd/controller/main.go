@@ -7,9 +7,8 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
-	"os"
 	"os/signal"
 	"syscall"
 	"time"
@@ -18,8 +17,10 @@ import (
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/auth"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/backup"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/compute"
+	"github.com/HardcoreMonk/hardcorevisor/controller/internal/config"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/grpcapi"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/ha"
+	"github.com/HardcoreMonk/hardcorevisor/controller/internal/logging"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/network"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/peripheral"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/storage"
@@ -27,23 +28,21 @@ import (
 	"github.com/HardcoreMonk/hardcorevisor/controller/pkg/ffi"
 )
 
-const (
-	defaultHTTPAddr = ":8080"
-	defaultGRPCAddr = ":9090"
-	version         = "0.1.0"
-)
+const version = "0.1.0"
 
 func main() {
-	httpAddr := os.Getenv("HCV_API_ADDR")
-	if httpAddr == "" {
-		httpAddr = defaultHTTPAddr
-	}
-	grpcAddr := os.Getenv("HCV_GRPC_ADDR")
-	if grpcAddr == "" {
-		grpcAddr = defaultGRPCAddr
+	// ── Load configuration (hcv.yaml + env var overlay) ──
+	cfg, err := config.Load("hcv.yaml")
+	if err != nil {
+		// Fall back to defaults if config load fails for non-file-not-found errors.
+		fmt.Printf("WARNING: failed to load hcv.yaml: %v — using defaults\n", err)
+		cfg = config.DefaultConfig()
 	}
 
-	log.Printf("HardCoreVisor Controller v%s starting", version)
+	// ── Structured logging ──
+	logging.Setup(cfg.Log.Level, cfg.Log.Format)
+
+	slog.Info("HardCoreVisor Controller starting", "version", version)
 
 	// ── Initialize services ──
 	core := ffi.NewMockVMCore()
@@ -57,8 +56,7 @@ func main() {
 	computeSvc := compute.NewComputeService(selector, rustVMM)
 
 	// ── State Store (etcd or in-memory) ──
-	etcdEndpoints := os.Getenv("HCV_ETCD_ENDPOINTS")
-	kvStore := store.NewStore(etcdEndpoints)
+	kvStore := store.NewStore(cfg.Etcd.Endpoints)
 	defer kvStore.Close()
 
 	// Wrap compute service with persistence if using a real store
@@ -66,7 +64,7 @@ func main() {
 	if _, isMemory := kvStore.(*store.MemoryStore); !isMemory {
 		persistent := compute.NewPersistentComputeService(computeSvc, kvStore)
 		if err := persistent.LoadFromStore(); err != nil {
-			log.Printf("WARNING: failed to load VMs from store: %v", err)
+			slog.Warn("failed to load VMs from store", "error", err)
 		}
 		computeProvider = persistent
 	}
@@ -92,12 +90,12 @@ func main() {
 			VMCore:    core.Version(),
 		},
 	}
-	// Load RBAC users from environment
-	rbacUsers := auth.LoadUsers()
+	// Load RBAC users from config (config already merged env vars)
+	rbacUsers := auth.ParseUsers(cfg.Auth.Users)
 	router := api.NewRouter(restServices, rbacUsers)
 
 	httpSrv := &http.Server{
-		Addr:         httpAddr,
+		Addr:         cfg.API.Addr,
 		Handler:      router,
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
@@ -117,29 +115,29 @@ func main() {
 	defer stop()
 
 	go func() {
-		log.Printf("REST API listening on %s", httpAddr)
+		slog.Info("REST API listening", "addr", cfg.API.Addr)
 		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("REST listen error: %v", err)
+			slog.Error("REST listen error", "error", err)
 		}
 	}()
 
 	go func() {
-		log.Printf("gRPC listening on %s", grpcAddr)
-		if err := grpcapi.ListenAndServe(grpcSrv, grpcAddr); err != nil {
-			log.Fatalf("gRPC listen error: %v", err)
+		slog.Info("gRPC listening", "addr", cfg.GRPC.Addr)
+		if err := grpcapi.ListenAndServe(grpcSrv, cfg.GRPC.Addr); err != nil {
+			slog.Error("gRPC listen error", "error", err)
 		}
 	}()
 
-	log.Printf("Controller ready — REST %s, gRPC %s", httpAddr, grpcAddr)
+	slog.Info("Controller ready", "rest", cfg.API.Addr, "grpc", cfg.GRPC.Addr)
 	<-ctx.Done()
 
-	log.Println("Shutting down gracefully...")
+	slog.Info("Shutting down gracefully...")
 	grpcSrv.GracefulStop()
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
-		log.Fatalf("shutdown error: %v", err)
+		slog.Error("shutdown error", "error", err)
 	}
 	core.Shutdown()
 	fmt.Println("Controller stopped.")

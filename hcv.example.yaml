@@ -1,0 +1,30 @@
+# HardCoreVisor Controller Configuration
+#
+# Place this file as hcv.yaml in the working directory.
+# All values can be overridden by environment variables.
+
+# REST API server
+api:
+  addr: ":8080"          # HCV_API_ADDR
+
+# gRPC server
+grpc:
+  addr: ":9090"          # HCV_GRPC_ADDR
+
+# etcd state store (leave empty for in-memory fallback)
+etcd:
+  endpoints: ""          # HCV_ETCD_ENDPOINTS  (comma-separated, e.g. "localhost:2379")
+
+# TLS (optional — omit to serve plain HTTP/gRPC)
+tls:
+  cert_file: ""          # HCV_TLS_CERT
+  key_file: ""           # HCV_TLS_KEY
+
+# RBAC authentication (omit or leave empty to disable)
+auth:
+  users: ""              # HCV_RBAC_USERS  (format: "user1:pass1:admin,user2:pass2:viewer")
+
+# Logging
+log:
+  level: "info"          # HCV_LOG_LEVEL   (debug, info, warn, error)
+  format: "text"         # HCV_LOG_FORMAT  (text, json)

@@ -89,7 +89,13 @@ func RBACMiddleware(users map[string]RBACUser) func(http.Handler) http.Handler {
 // Format: "user1:pass1:admin,user2:pass2:viewer"
 // Returns nil if the env var is not set or empty.
 func LoadUsers() map[string]RBACUser {
-	raw := os.Getenv("HCV_RBAC_USERS")
+	return ParseUsers(os.Getenv("HCV_RBAC_USERS"))
+}
+
+// ParseUsers parses a raw RBAC user string.
+// Format: "user1:pass1:admin,user2:pass2:viewer"
+// Returns nil if the input is empty or contains no valid entries.
+func ParseUsers(raw string) map[string]RBACUser {
 	if raw == "" {
 		return nil
 	}

@@ -223,3 +223,29 @@ stack-test-keep:
 audit:
     cargo audit
     cd controller && govulncheck ./...
+
+# ═══════════════════════════════════════════════════════════
+# Benchmarks
+# ═══════════════════════════════════════════════════════════
+
+# Run performance benchmarks
+bench:
+    cargo bench -p vmcore
+
+# Run Go benchmarks
+go-bench:
+    cd controller && GOTOOLCHAIN=local go test -bench=. -benchmem ./internal/api/
+
+# ═══════════════════════════════════════════════════════════
+# Release
+# ═══════════════════════════════════════════════════════════
+
+# Tag a release version
+release-tag version:
+    git tag -a v{{version}} -m "Release v{{version}}"
+    @echo "Tagged v{{version}}. Push with: git push origin v{{version}}"
+
+# Build release binaries
+release-build: rust-release go-controller go-hcvctl
+    @echo "Release binaries:"
+    @ls -lh target/release/libvmcore.a target/controller target/hcvctl 2>/dev/null || true

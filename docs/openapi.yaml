@@ -1,0 +1,1083 @@
+openapi: "3.0.3"
+info:
+  title: HardCoreVisor API
+  description: >
+    REST API for HardCoreVisor — a hybrid virtualisation platform combining
+    Rust (KVM core) and Go (orchestration controller) with dual VMM backends
+    (rust-vmm for high-performance Linux microVMs, QEMU for general-purpose VMs).
+  version: "0.1.0"
+  license:
+    name: AGPL-3.0
+    url: https://www.gnu.org/licenses/agpl-3.0.html
+
+servers:
+  - url: http://localhost:8080
+    description: Local development controller
+
+tags:
+  - name: health
+    description: Health and version endpoints
+  - name: compute
+    description: VM lifecycle management
+  - name: backends
+    description: VMM backend information
+  - name: storage
+    description: Storage pool and volume management
+  - name: network
+    description: SDN zones, virtual networks, and firewall rules
+  - name: devices
+    description: Peripheral device passthrough (GPU/NIC/USB)
+  - name: cluster
+    description: HA cluster status, nodes, and fencing
+  - name: backups
+    description: VM backup management
+  - name: nodes
+    description: Node resource information
+  - name: monitoring
+    description: Prometheus metrics
+
+paths:
+  # ── Health / Meta ──────────────────────────────────────
+  /healthz:
+    get:
+      tags: [health]
+      summary: Health check
+      operationId: healthCheck
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+
+  /api/v1/version:
+    get:
+      tags: [health]
+      summary: Version information
+      operationId: getVersion
+      responses:
+        "200":
+          description: Version metadata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VersionResponse"
+
+  /metrics:
+    get:
+      tags: [monitoring]
+      summary: Prometheus metrics
+      operationId: getMetrics
+      responses:
+        "200":
+          description: Prometheus text exposition format
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  # ── Compute (VMs) ──────────────────────────────────────
+  /api/v1/vms:
+    get:
+      tags: [compute]
+      summary: List all VMs
+      operationId: listVMs
+      responses:
+        "200":
+          description: Array of VMs
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/VMInfo"
+
+    post:
+      tags: [compute]
+      summary: Create a new VM
+      operationId: createVM
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateVMRequest"
+      responses:
+        "201":
+          description: VM created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VMInfo"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Backend error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/vms/{id}:
+    get:
+      tags: [compute]
+      summary: Get VM by ID
+      operationId: getVM
+      parameters:
+        - $ref: "#/components/parameters/vmId"
+      responses:
+        "200":
+          description: VM details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VMInfo"
+        "400":
+          description: Invalid VM ID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: VM not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    delete:
+      tags: [compute]
+      summary: Delete a VM
+      operationId: deleteVM
+      parameters:
+        - $ref: "#/components/parameters/vmId"
+      responses:
+        "204":
+          description: VM deleted
+        "400":
+          description: Invalid VM ID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: VM not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/vms/{id}/start:
+    post:
+      tags: [compute]
+      summary: Start a VM
+      operationId: startVM
+      parameters:
+        - $ref: "#/components/parameters/vmId"
+      responses:
+        "200":
+          description: VM started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VMInfo"
+        "404":
+          description: VM not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Invalid state transition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/vms/{id}/stop:
+    post:
+      tags: [compute]
+      summary: Stop a VM
+      operationId: stopVM
+      parameters:
+        - $ref: "#/components/parameters/vmId"
+      responses:
+        "200":
+          description: VM stopped
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VMInfo"
+        "404":
+          description: VM not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Invalid state transition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/vms/{id}/pause:
+    post:
+      tags: [compute]
+      summary: Pause a VM
+      operationId: pauseVM
+      parameters:
+        - $ref: "#/components/parameters/vmId"
+      responses:
+        "200":
+          description: VM paused
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VMInfo"
+        "404":
+          description: VM not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Invalid state transition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/vms/{id}/resume:
+    post:
+      tags: [compute]
+      summary: Resume a paused VM
+      operationId: resumeVM
+      parameters:
+        - $ref: "#/components/parameters/vmId"
+      responses:
+        "200":
+          description: VM resumed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VMInfo"
+        "404":
+          description: VM not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Invalid state transition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ── Backends ───────────────────────────────────────────
+  /api/v1/backends:
+    get:
+      tags: [backends]
+      summary: List VMM backends
+      operationId: listBackends
+      responses:
+        "200":
+          description: Array of registered VMM backends
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/BackendInfo"
+
+  # ── Storage ────────────────────────────────────────────
+  /api/v1/storage/pools:
+    get:
+      tags: [storage]
+      summary: List storage pools
+      operationId: listStoragePools
+      responses:
+        "200":
+          description: Array of storage pools
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/StoragePool"
+
+  /api/v1/storage/volumes:
+    get:
+      tags: [storage]
+      summary: List storage volumes
+      operationId: listStorageVolumes
+      parameters:
+        - name: pool
+          in: query
+          required: false
+          description: Filter volumes by pool name
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Array of volumes
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/StorageVolume"
+
+    post:
+      tags: [storage]
+      summary: Create a storage volume
+      operationId: createStorageVolume
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateVolumeRequest"
+      responses:
+        "201":
+          description: Volume created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StorageVolume"
+        "400":
+          description: Invalid request or pool not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/storage/volumes/{id}:
+    delete:
+      tags: [storage]
+      summary: Delete a storage volume
+      operationId: deleteStorageVolume
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Volume ID
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Volume deleted
+        "404":
+          description: Volume not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ── Network ────────────────────────────────────────────
+  /api/v1/network/zones:
+    get:
+      tags: [network]
+      summary: List SDN zones
+      operationId: listNetworkZones
+      responses:
+        "200":
+          description: Array of SDN zones
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/NetworkZone"
+
+  /api/v1/network/vnets:
+    get:
+      tags: [network]
+      summary: List virtual networks
+      operationId: listVNets
+      parameters:
+        - name: zone
+          in: query
+          required: false
+          description: Filter VNets by zone name
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Array of virtual networks
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/VNet"
+
+  /api/v1/network/firewall:
+    get:
+      tags: [network]
+      summary: List firewall rules
+      operationId: listFirewallRules
+      responses:
+        "200":
+          description: Array of firewall rules
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/FirewallRule"
+
+  # ── Devices (Peripheral) ───────────────────────────────
+  /api/v1/devices:
+    get:
+      tags: [devices]
+      summary: List passthrough devices
+      operationId: listDevices
+      parameters:
+        - name: type
+          in: query
+          required: false
+          description: Filter by device type
+          schema:
+            type: string
+            enum: [gpu, nic, usb, disk]
+      responses:
+        "200":
+          description: Array of devices
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Device"
+
+  /api/v1/devices/{id}/attach:
+    post:
+      tags: [devices]
+      summary: Attach a device to a VM
+      operationId: attachDevice
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Device ID
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AttachDeviceRequest"
+      responses:
+        "200":
+          description: Device attached
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Device already attached
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/devices/{id}/detach:
+    post:
+      tags: [devices]
+      summary: Detach a device from a VM
+      operationId: detachDevice
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Device ID
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Device detached
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusResponse"
+        "409":
+          description: Device not attached or not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ── Cluster (HA) ───────────────────────────────────────
+  /api/v1/cluster/status:
+    get:
+      tags: [cluster]
+      summary: Get cluster status
+      operationId: getClusterStatus
+      responses:
+        "200":
+          description: Cluster health summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClusterStatus"
+
+  /api/v1/cluster/nodes:
+    get:
+      tags: [cluster]
+      summary: List HA cluster nodes
+      operationId: listClusterNodes
+      responses:
+        "200":
+          description: Array of cluster nodes
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ClusterNode"
+
+  /api/v1/cluster/fence/{node}:
+    post:
+      tags: [cluster]
+      summary: Fence a cluster node
+      operationId: fenceNode
+      parameters:
+        - name: node
+          in: path
+          required: true
+          description: Node name to fence
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FenceRequest"
+      responses:
+        "200":
+          description: Fencing operation result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FenceEvent"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Node not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ── Backups ────────────────────────────────────────────
+  /api/v1/backups:
+    get:
+      tags: [backups]
+      summary: List all backups
+      operationId: listBackups
+      responses:
+        "200":
+          description: Array of backups
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/BackupInfo"
+
+    post:
+      tags: [backups]
+      summary: Create a VM backup
+      operationId: createBackup
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateBackupRequest"
+      responses:
+        "201":
+          description: Backup created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BackupInfo"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/backups/{id}:
+    get:
+      tags: [backups]
+      summary: Get backup by ID
+      operationId: getBackup
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Backup ID
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Backup details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BackupInfo"
+        "404":
+          description: Backup not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    delete:
+      tags: [backups]
+      summary: Delete a backup
+      operationId: deleteBackup
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Backup ID
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Backup deleted
+        "404":
+          description: Backup not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ── Nodes ──────────────────────────────────────────────
+  /api/v1/nodes:
+    get:
+      tags: [nodes]
+      summary: List node resource information
+      operationId: listNodes
+      responses:
+        "200":
+          description: Array of nodes with resource usage
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/NodeInfo"
+
+# ══════════════════════════════════════════════════════════
+components:
+  parameters:
+    vmId:
+      name: id
+      in: path
+      required: true
+      description: VM handle (numeric ID)
+      schema:
+        type: integer
+        format: int32
+
+  schemas:
+    # ── Common ─────────────────────────────────────────
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          description: Human-readable error message
+
+    StatusResponse:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          description: Operation result status
+
+    HealthResponse:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          example: ok
+
+    VersionResponse:
+      type: object
+      properties:
+        product:
+          type: string
+          example: HardCoreVisor
+        version:
+          type: string
+          example: "0.1.0"
+        arch:
+          type: string
+          example: hybrid-rust-go
+        git_commit:
+          type: string
+        build_date:
+          type: string
+          format: date-time
+        vmcore_version:
+          type: string
+          example: mock-0.1.0
+
+    # ── Compute ────────────────────────────────────────
+    VMInfo:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int32
+          description: VM handle
+        name:
+          type: string
+        state:
+          type: string
+          enum: [configured, running, paused, stopped]
+        vcpus:
+          type: integer
+          format: int32
+        memory_mb:
+          type: integer
+          format: int64
+        node:
+          type: string
+        backend:
+          type: string
+          enum: [rustvmm, qemu]
+        created_at:
+          type: string
+          format: date-time
+
+    CreateVMRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          description: VM name (defaults to "unnamed")
+        vcpus:
+          type: integer
+          format: int32
+          description: Number of vCPUs (defaults to 1)
+        memory_mb:
+          type: integer
+          format: int64
+          description: Memory in MiB (defaults to 512)
+        backend:
+          type: string
+          enum: [rustvmm, qemu]
+          description: >
+            VMM backend to use. If omitted, BackendSelector chooses
+            automatically based on workload characteristics.
+
+    BackendInfo:
+      type: object
+      properties:
+        name:
+          type: string
+          enum: [rustvmm, qemu]
+        status:
+          type: string
+        vm_count:
+          type: integer
+
+    # ── Storage ────────────────────────────────────────
+    StoragePool:
+      type: object
+      properties:
+        name:
+          type: string
+        pool_type:
+          type: string
+          enum: [zfs, ceph, lvm, dir]
+        total_bytes:
+          type: integer
+          format: int64
+        used_bytes:
+          type: integer
+          format: int64
+        health:
+          type: string
+          enum: [healthy, degraded, faulted]
+
+    StorageVolume:
+      type: object
+      properties:
+        id:
+          type: string
+        pool:
+          type: string
+        name:
+          type: string
+        size_bytes:
+          type: integer
+          format: int64
+        format:
+          type: string
+          enum: [qcow2, raw, zvol]
+        path:
+          type: string
+        created_at:
+          type: integer
+          format: int64
+          description: Unix timestamp
+
+    CreateVolumeRequest:
+      type: object
+      required: [pool, name, size_bytes, format]
+      properties:
+        pool:
+          type: string
+          description: Target storage pool name
+        name:
+          type: string
+          description: Volume name
+        size_bytes:
+          type: integer
+          format: int64
+          description: Volume size in bytes
+        format:
+          type: string
+          enum: [qcow2, raw, zvol]
+          description: Disk image format
+
+    # ── Network ────────────────────────────────────────
+    NetworkZone:
+      type: object
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+          enum: [vxlan, vlan, simple, evpn]
+        mtu:
+          type: integer
+        bridge:
+          type: string
+        status:
+          type: string
+          enum: [active, pending, error]
+
+    VNet:
+      type: object
+      properties:
+        id:
+          type: string
+        zone:
+          type: string
+        name:
+          type: string
+        tag:
+          type: integer
+          description: VLAN tag or VXLAN VNI
+        subnet:
+          type: string
+          description: CIDR notation
+        status:
+          type: string
+
+    FirewallRule:
+      type: object
+      properties:
+        id:
+          type: string
+        direction:
+          type: string
+          enum: [in, out]
+        action:
+          type: string
+          enum: [accept, drop, reject]
+        protocol:
+          type: string
+          enum: [tcp, udp, icmp]
+        source:
+          type: string
+        dest:
+          type: string
+        dport:
+          type: string
+        comment:
+          type: string
+        enabled:
+          type: boolean
+
+    # ── Devices ────────────────────────────────────────
+    Device:
+      type: object
+      properties:
+        id:
+          type: string
+        device_type:
+          type: string
+          enum: [gpu, nic, usb, disk]
+        description:
+          type: string
+        pci_address:
+          type: string
+        attached_vm:
+          type: integer
+          format: int32
+          description: VM handle the device is attached to (0 = not attached)
+        iommu_group:
+          type: string
+        driver:
+          type: string
+
+    AttachDeviceRequest:
+      type: object
+      required: [vm_handle]
+      properties:
+        vm_handle:
+          type: integer
+          format: int32
+          description: VM handle to attach the device to
+
+    # ── Cluster / HA ───────────────────────────────────
+    ClusterStatus:
+      type: object
+      properties:
+        quorum:
+          type: boolean
+        node_count:
+          type: integer
+        online_count:
+          type: integer
+        leader:
+          type: string
+        status:
+          type: string
+          enum: [healthy, degraded, critical]
+
+    ClusterNode:
+      type: object
+      properties:
+        name:
+          type: string
+        status:
+          type: string
+          enum: [online, offline, fenced]
+        last_seen:
+          type: string
+          format: date-time
+        is_leader:
+          type: boolean
+        vm_count:
+          type: integer
+        fence_agent:
+          type: string
+
+    FenceRequest:
+      type: object
+      required: [reason, action]
+      properties:
+        reason:
+          type: string
+          description: Reason for fencing
+        action:
+          type: string
+          enum: [reboot, off, on]
+          description: Fencing action to perform
+
+    FenceEvent:
+      type: object
+      properties:
+        id:
+          type: string
+        node_name:
+          type: string
+        reason:
+          type: string
+        action:
+          type: string
+        success:
+          type: boolean
+        timestamp:
+          type: string
+          format: date-time
+
+    # ── Backups ────────────────────────────────────────
+    BackupInfo:
+      type: object
+      properties:
+        id:
+          type: string
+        vm_id:
+          type: integer
+          format: int32
+        vm_name:
+          type: string
+        snapshot_id:
+          type: string
+        status:
+          type: string
+          enum: [pending, running, completed, failed]
+        created_at:
+          type: integer
+          format: int64
+          description: Unix timestamp
+        size_bytes:
+          type: integer
+          format: int64
+        storage_pool:
+          type: string
+
+    CreateBackupRequest:
+      type: object
+      required: [vm_id, vm_name, pool]
+      properties:
+        vm_id:
+          type: integer
+          format: int32
+          description: VM handle to back up
+        vm_name:
+          type: string
+          description: VM name (for labelling)
+        pool:
+          type: string
+          description: Storage pool for the backup volume
+
+    # ── Nodes ──────────────────────────────────────────
+    NodeInfo:
+      type: object
+      properties:
+        name:
+          type: string
+        status:
+          type: string
+        cpu_percent:
+          type: number
+          format: double
+        memory_percent:
+          type: number
+          format: double
+        vm_count:
+          type: integer

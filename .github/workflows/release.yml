@@ -1,0 +1,39 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+env:
+  GOTOOLCHAIN: local
+
+jobs:
+  release:
+    name: Build & Release
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.23' }
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build Rust
+        run: cargo build --workspace --release
+
+      - name: Build Go
+        run: |
+          cd controller
+          CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=${{ github.ref_name }}" -o ../target/hcv-controller ./cmd/controller
+          CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=${{ github.ref_name }}" -o ../target/hcvctl ./cmd/hcvctl
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            target/release/libvmcore.a
+            target/hcv-controller
+            target/hcvctl
+          generate_release_notes: true

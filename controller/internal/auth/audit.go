@@ -1,8 +1,7 @@
 package auth
 
 import (
-	"encoding/json"
-	"log"
+	"log/slog"
 	"net/http"
 	"time"
 )
@@ -27,27 +26,22 @@ func NewAuditLogger() *AuditLogger {
 	return &AuditLogger{}
 }
 
-// Log writes an audit entry as structured JSON to stdout.
+// Log writes an audit entry using slog structured logging.
 func (a *AuditLogger) Log(entry AuditEntry) {
-	record := map[string]any{
-		"audit":       true,
-		"ts":          entry.Timestamp.Format(time.RFC3339Nano),
-		"user":        entry.User,
-		"method":      entry.Method,
-		"path":        entry.Path,
-		"status":      entry.StatusCode,
-		"duration_ms": entry.DurationMs,
-		"remote_addr": entry.RemoteAddr,
+	attrs := []any{
+		slog.Bool("audit", true),
+		slog.String("ts", entry.Timestamp.Format(time.RFC3339Nano)),
+		slog.String("user", entry.User),
+		slog.String("method", entry.Method),
+		slog.String("path", entry.Path),
+		slog.Int("status", entry.StatusCode),
+		slog.Float64("duration_ms", entry.DurationMs),
+		slog.String("remote_addr", entry.RemoteAddr),
 	}
 	if entry.Role != "" {
-		record["role"] = entry.Role
+		attrs = append(attrs, slog.String("role", entry.Role))
 	}
-	data, err := json.Marshal(record)
-	if err != nil {
-		log.Printf("audit: marshal error: %v", err)
-		return
-	}
-	log.Println(string(data))
+	slog.Info("audit", attrs...)
 }
 
 // statusCapture wraps http.ResponseWriter to capture the status code.
