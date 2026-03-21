@@ -8,11 +8,15 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/compute"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/ha"
+	"github.com/HardcoreMonk/hardcorevisor/controller/internal/metrics"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/network"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/peripheral"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/storage"
@@ -39,7 +43,10 @@ type Services struct {
 
 // NewRouter creates the HTTP router with middleware.
 // If svc is nil, stub handlers are used (for backwards compatibility).
+var metricsRegistered sync.Once
+
 func NewRouter(svc *Services) http.Handler {
+	metricsRegistered.Do(metrics.Register)
 	mux := http.NewServeMux()
 
 	if svc != nil {
@@ -77,7 +84,24 @@ func NewRouter(svc *Services) http.Handler {
 		mux.HandleFunc("GET /api/v1/cluster/status", svc.handleClusterStatus)
 		mux.HandleFunc("GET /api/v1/cluster/nodes", svc.handleClusterNodes)
 		mux.HandleFunc("POST /api/v1/cluster/fence/{node}", svc.handleFenceNode)
+	}
+
+	// Metrics endpoint (available in both live and stub modes)
+	metricsHandler := promhttp.Handler()
+	if svc != nil {
+		mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, r *http.Request) {
+			metrics.CollectFromServices(&metrics.ServiceRefs{
+				Compute: svc.Compute,
+				Storage: svc.Storage,
+				HA:      svc.HA,
+			})
+			metricsHandler.ServeHTTP(w, r)
+		})
 	} else {
+		mux.Handle("GET /metrics", metricsHandler)
+	}
+
+	if svc == nil {
 		// Legacy stub handlers (no compute service)
 		mux.HandleFunc("GET /healthz", handleHealth)
 		mux.HandleFunc("GET /api/v1/version", handleStubVersion)
@@ -91,10 +115,11 @@ func NewRouter(svc *Services) http.Handler {
 		mux.HandleFunc("GET /api/v1/nodes", handleListNodes)
 	}
 
-	// Middleware chain: RequestID → Logging → CORS → Recovery
+	// Middleware chain: RequestID → Logging → Metrics → CORS → Recovery
 	var handler http.Handler = mux
 	handler = recoveryMiddleware(handler)
 	handler = corsMiddleware(handler)
+	handler = metrics.InstrumentHandler(handler)
 	handler = loggingMiddleware(handler)
 	handler = requestIDMiddleware(handler)
 

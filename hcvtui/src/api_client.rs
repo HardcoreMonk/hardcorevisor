@@ -5,6 +5,102 @@ use serde::{Deserialize, Serialize};
 /// Base URL for the Go Controller REST API
 const DEFAULT_BASE_URL: &str = "http://localhost:8080/api/v1";
 
+/// Storage pool info
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PoolInfo {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default, rename = "type")]
+    pub pool_type: String,
+    #[serde(default)]
+    pub total_bytes: u64,
+    #[serde(default)]
+    pub used_bytes: u64,
+    #[serde(default)]
+    pub health: String,
+}
+
+/// Storage volume info
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct VolumeInfo {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub pool: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub size_bytes: u64,
+    #[serde(default)]
+    pub format: String,
+    #[serde(default)]
+    pub path: String,
+}
+
+/// SDN zone info
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ZoneInfo {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default, rename = "type")]
+    pub zone_type: String,
+    #[serde(default)]
+    pub mtu: u32,
+    #[serde(default)]
+    pub bridge: String,
+    #[serde(default)]
+    pub status: String,
+}
+
+/// Virtual network info
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct VNetInfo {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub zone: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub tag: u32,
+    #[serde(default)]
+    pub subnet: String,
+    #[serde(default)]
+    pub status: String,
+}
+
+/// Cluster status info
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ClusterStatusInfo {
+    #[serde(default)]
+    pub quorum: bool,
+    #[serde(default)]
+    pub node_count: u32,
+    #[serde(default)]
+    pub online_count: u32,
+    #[serde(default)]
+    pub leader: String,
+    #[serde(default)]
+    pub status: String,
+}
+
+/// Cluster node info (HA)
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ClusterNodeInfo {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub last_seen: String,
+    #[serde(default)]
+    pub is_leader: bool,
+    #[serde(default)]
+    pub vm_count: u32,
+    #[serde(default)]
+    pub fence_agent: String,
+}
+
 /// API client configuration
 pub struct ApiClient {
     base_url: String,
@@ -144,6 +240,78 @@ impl ApiClient {
             return Err(ApiError::Status(code, body));
         }
         Ok(())
+    }
+
+    /// List storage pools
+    #[allow(dead_code)]
+    pub async fn list_pools(&self) -> Result<Vec<PoolInfo>, ApiError> {
+        Ok(self
+            .client
+            .get(format!("{}/storage/pools", self.base_url))
+            .send()
+            .await?
+            .json()
+            .await?)
+    }
+
+    /// List storage volumes
+    #[allow(dead_code)]
+    pub async fn list_volumes(&self) -> Result<Vec<VolumeInfo>, ApiError> {
+        Ok(self
+            .client
+            .get(format!("{}/storage/volumes", self.base_url))
+            .send()
+            .await?
+            .json()
+            .await?)
+    }
+
+    /// List SDN zones
+    #[allow(dead_code)]
+    pub async fn list_zones(&self) -> Result<Vec<ZoneInfo>, ApiError> {
+        Ok(self
+            .client
+            .get(format!("{}/network/zones", self.base_url))
+            .send()
+            .await?
+            .json()
+            .await?)
+    }
+
+    /// List virtual networks
+    #[allow(dead_code)]
+    pub async fn list_vnets(&self) -> Result<Vec<VNetInfo>, ApiError> {
+        Ok(self
+            .client
+            .get(format!("{}/network/vnets", self.base_url))
+            .send()
+            .await?
+            .json()
+            .await?)
+    }
+
+    /// Get cluster status
+    #[allow(dead_code)]
+    pub async fn cluster_status(&self) -> Result<ClusterStatusInfo, ApiError> {
+        Ok(self
+            .client
+            .get(format!("{}/cluster/status", self.base_url))
+            .send()
+            .await?
+            .json()
+            .await?)
+    }
+
+    /// List cluster nodes (HA)
+    #[allow(dead_code)]
+    pub async fn cluster_nodes(&self) -> Result<Vec<ClusterNodeInfo>, ApiError> {
+        Ok(self
+            .client
+            .get(format!("{}/cluster/nodes", self.base_url))
+            .send()
+            .await?
+            .json()
+            .await?)
     }
 
     /// Create a VM

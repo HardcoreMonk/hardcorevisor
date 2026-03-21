@@ -2,11 +2,13 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
@@ -76,19 +78,164 @@ func main() {
 		},
 	}
 
-	root.AddCommand(vmCmd, nodeCmd, versionCmd)
+	// ── storage subcommand ──
+	storageCmd := &cobra.Command{Use: "storage", Short: "Manage storage pools and volumes"}
+
+	storagePoolCmd := &cobra.Command{Use: "pool", Short: "Manage storage pools"}
+	storagePoolCmd.AddCommand(&cobra.Command{
+		Use:   "list",
+		Short: "List storage pools",
+		RunE:  storagePoolList,
+	})
+
+	storageVolumeCmd := &cobra.Command{Use: "volume", Short: "Manage storage volumes"}
+	storageVolumeCmd.AddCommand(&cobra.Command{
+		Use:   "list",
+		Short: "List storage volumes",
+		RunE:  storageVolumeList,
+	})
+
+	volCreateCmd := &cobra.Command{
+		Use:   "create",
+		Short: "Create a storage volume",
+		RunE:  storageVolumeCreate,
+	}
+	volCreateCmd.Flags().String("pool", "", "Storage pool name")
+	volCreateCmd.Flags().String("name", "", "Volume name")
+	volCreateCmd.Flags().Uint64("size", 0, "Volume size in bytes")
+	volCreateCmd.Flags().String("format", "qcow2", "Volume format (qcow2, raw, zvol)")
+	storageVolumeCmd.AddCommand(volCreateCmd)
+
+	storageCmd.AddCommand(storagePoolCmd, storageVolumeCmd)
+
+	// ── network subcommand ──
+	networkCmd := &cobra.Command{Use: "network", Short: "Manage SDN zones and virtual networks"}
+
+	networkZoneCmd := &cobra.Command{Use: "zone", Short: "Manage SDN zones"}
+	networkZoneCmd.AddCommand(&cobra.Command{
+		Use:   "list",
+		Short: "List SDN zones",
+		RunE:  networkZoneList,
+	})
+
+	networkVnetCmd := &cobra.Command{Use: "vnet", Short: "Manage virtual networks"}
+	networkVnetCmd.AddCommand(&cobra.Command{
+		Use:   "list",
+		Short: "List virtual networks",
+		RunE:  networkVnetList,
+	})
+
+	networkFirewallCmd := &cobra.Command{Use: "firewall", Short: "Manage firewall rules"}
+	networkFirewallCmd.AddCommand(&cobra.Command{
+		Use:   "list",
+		Short: "List firewall rules",
+		RunE:  networkFirewallList,
+	})
+
+	networkCmd.AddCommand(networkZoneCmd, networkVnetCmd, networkFirewallCmd)
+
+	// ── device subcommand ──
+	deviceCmd := &cobra.Command{Use: "device", Short: "Manage peripheral devices"}
+
+	deviceListCmd := &cobra.Command{
+		Use:   "list",
+		Short: "List devices",
+		RunE:  deviceList,
+	}
+	deviceListCmd.Flags().String("type", "", "Filter by device type (gpu, nic, usb, disk)")
+	deviceCmd.AddCommand(deviceListCmd)
+
+	deviceAttachCmd := &cobra.Command{
+		Use:   "attach",
+		Short: "Attach a device to a VM",
+		RunE:  deviceAttach,
+	}
+	deviceAttachCmd.Flags().String("id", "", "Device ID")
+	deviceAttachCmd.Flags().Int32("vm", 0, "VM handle to attach to")
+	deviceCmd.AddCommand(deviceAttachCmd)
+
+	deviceDetachCmd := &cobra.Command{
+		Use:   "detach",
+		Short: "Detach a device from a VM",
+		RunE:  deviceDetach,
+	}
+	deviceDetachCmd.Flags().String("id", "", "Device ID")
+	deviceCmd.AddCommand(deviceDetachCmd)
+
+	// ── cluster subcommand ──
+	clusterCmd := &cobra.Command{Use: "cluster", Short: "Manage HA cluster"}
+
+	clusterCmd.AddCommand(&cobra.Command{
+		Use:   "status",
+		Short: "Show cluster status",
+		RunE:  clusterStatus,
+	})
+
+	clusterNodeCmd := &cobra.Command{Use: "node", Short: "Manage cluster nodes"}
+	clusterNodeCmd.AddCommand(&cobra.Command{
+		Use:   "list",
+		Short: "List cluster nodes",
+		RunE:  clusterNodeList,
+	})
+	clusterCmd.AddCommand(clusterNodeCmd)
+
+	clusterFenceCmd := &cobra.Command{
+		Use:   "fence",
+		Short: "Fence a cluster node",
+		RunE:  clusterFence,
+	}
+	clusterFenceCmd.Flags().String("node", "", "Node name to fence")
+	clusterFenceCmd.Flags().String("reason", "", "Reason for fencing")
+	clusterFenceCmd.Flags().String("action", "reboot", "Fence action (reboot, off, on)")
+	clusterCmd.AddCommand(clusterFenceCmd)
+
+	root.AddCommand(vmCmd, nodeCmd, versionCmd, storageCmd, networkCmd, deviceCmd, clusterCmd)
 
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
 	}
 }
 
+// ── API helpers ──────────────────────────────────────────
+
+func apiGet(path string) (*http.Response, error) {
+	resp, err := http.Get(apiAddr + path)
+	if err != nil {
+		return nil, fmt.Errorf("API request failed: %w", err)
+	}
+	return resp, nil
+}
+
+func apiPost(path string, body interface{}) (*http.Response, error) {
+	var r io.Reader
+	if body != nil {
+		data, err := json.Marshal(body)
+		if err != nil {
+			return nil, fmt.Errorf("marshal error: %w", err)
+		}
+		r = bytes.NewReader(data)
+	}
+	resp, err := http.Post(apiAddr+path, "application/json", r)
+	if err != nil {
+		return nil, fmt.Errorf("API request failed: %w", err)
+	}
+	return resp, nil
+}
+
+func checkResponse(resp *http.Response) error {
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("API error (%d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	return nil
+}
+
 // ── VM handlers ──────────────────────────────────────────
 
 func vmList(cmd *cobra.Command, args []string) error {
-	resp, err := http.Get(apiAddr + "/api/v1/vms")
+	resp, err := apiGet("/api/v1/vms")
 	if err != nil {
-		return fmt.Errorf("API request failed: %w", err)
+		return err
 	}
 	defer resp.Body.Close()
 
@@ -141,9 +288,9 @@ func vmAction(id, action string) error {
 // ── Node handlers ────────────────────────────────────────
 
 func nodeList(cmd *cobra.Command, args []string) error {
-	resp, err := http.Get(apiAddr + "/api/v1/nodes")
+	resp, err := apiGet("/api/v1/nodes")
 	if err != nil {
-		return fmt.Errorf("API request failed: %w", err)
+		return err
 	}
 	defer resp.Body.Close()
 
@@ -166,4 +313,367 @@ func nodeList(cmd *cobra.Command, args []string) error {
 	}
 	tw.Flush()
 	return nil
+}
+
+// ── Storage handlers ─────────────────────────────────────
+
+func storagePoolList(cmd *cobra.Command, args []string) error {
+	resp, err := apiGet("/api/v1/storage/pools")
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	var pools []struct {
+		Name       string `json:"name"`
+		PoolType   string `json:"pool_type"`
+		TotalBytes uint64 `json:"total_bytes"`
+		UsedBytes  uint64 `json:"used_bytes"`
+		Health     string `json:"health"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&pools); err != nil {
+		return fmt.Errorf("decode error: %w", err)
+	}
+
+	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "NAME\tTYPE\tTOTAL\tUSED\tHEALTH")
+	for _, p := range pools {
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
+			p.Name, p.PoolType, formatBytes(p.TotalBytes), formatBytes(p.UsedBytes), p.Health)
+	}
+	tw.Flush()
+	return nil
+}
+
+func storageVolumeList(cmd *cobra.Command, args []string) error {
+	resp, err := apiGet("/api/v1/storage/volumes")
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	var volumes []struct {
+		ID        string `json:"id"`
+		Pool      string `json:"pool"`
+		Name      string `json:"name"`
+		SizeBytes uint64 `json:"size_bytes"`
+		Format    string `json:"format"`
+		Path      string `json:"path"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&volumes); err != nil {
+		return fmt.Errorf("decode error: %w", err)
+	}
+
+	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "ID\tPOOL\tNAME\tSIZE\tFORMAT\tPATH")
+	for _, v := range volumes {
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
+			v.ID, v.Pool, v.Name, formatBytes(v.SizeBytes), v.Format, v.Path)
+	}
+	tw.Flush()
+	return nil
+}
+
+func storageVolumeCreate(cmd *cobra.Command, args []string) error {
+	pool, _ := cmd.Flags().GetString("pool")
+	name, _ := cmd.Flags().GetString("name")
+	size, _ := cmd.Flags().GetUint64("size")
+	format, _ := cmd.Flags().GetString("format")
+
+	body := map[string]interface{}{
+		"pool":       pool,
+		"name":       name,
+		"size_bytes": size,
+		"format":     format,
+	}
+	resp, err := apiPost("/api/v1/storage/volumes", body)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if err := checkResponse(resp); err != nil {
+		return err
+	}
+	fmt.Printf("Volume '%s' created in pool '%s'.\n", name, pool)
+	return nil
+}
+
+// ── Network handlers ─────────────────────────────────────
+
+func networkZoneList(cmd *cobra.Command, args []string) error {
+	resp, err := apiGet("/api/v1/network/zones")
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	var zones []struct {
+		Name     string `json:"name"`
+		ZoneType string `json:"type"`
+		MTU      int    `json:"mtu"`
+		Bridge   string `json:"bridge"`
+		Status   string `json:"status"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&zones); err != nil {
+		return fmt.Errorf("decode error: %w", err)
+	}
+
+	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "NAME\tTYPE\tMTU\tBRIDGE\tSTATUS")
+	for _, z := range zones {
+		fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\n",
+			z.Name, z.ZoneType, z.MTU, z.Bridge, z.Status)
+	}
+	tw.Flush()
+	return nil
+}
+
+func networkVnetList(cmd *cobra.Command, args []string) error {
+	resp, err := apiGet("/api/v1/network/vnets")
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	var vnets []struct {
+		ID     string `json:"id"`
+		Zone   string `json:"zone"`
+		Name   string `json:"name"`
+		Tag    int    `json:"tag"`
+		Subnet string `json:"subnet"`
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&vnets); err != nil {
+		return fmt.Errorf("decode error: %w", err)
+	}
+
+	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "ID\tZONE\tNAME\tTAG\tSUBNET\tSTATUS")
+	for _, v := range vnets {
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\t%s\n",
+			v.ID, v.Zone, v.Name, v.Tag, v.Subnet, v.Status)
+	}
+	tw.Flush()
+	return nil
+}
+
+func networkFirewallList(cmd *cobra.Command, args []string) error {
+	resp, err := apiGet("/api/v1/network/firewall")
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	var rules []struct {
+		ID        string `json:"id"`
+		Direction string `json:"direction"`
+		Action    string `json:"action"`
+		Protocol  string `json:"protocol"`
+		Source    string `json:"source"`
+		Dest     string `json:"dest"`
+		DPort    string `json:"dport"`
+		Enabled  bool   `json:"enabled"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&rules); err != nil {
+		return fmt.Errorf("decode error: %w", err)
+	}
+
+	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "ID\tDIR\tACTION\tPROTO\tSOURCE\tDEST\tDPORT\tENABLED")
+	for _, r := range rules {
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%v\n",
+			r.ID, r.Direction, r.Action, r.Protocol, r.Source, r.Dest, r.DPort, r.Enabled)
+	}
+	tw.Flush()
+	return nil
+}
+
+// ── Device handlers ──────────────────────────────────────
+
+func deviceList(cmd *cobra.Command, args []string) error {
+	typeFilter, _ := cmd.Flags().GetString("type")
+	path := "/api/v1/devices"
+	if typeFilter != "" {
+		path += "?type=" + typeFilter
+	}
+	resp, err := apiGet(path)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	var devices []struct {
+		ID          string `json:"id"`
+		DeviceType  string `json:"device_type"`
+		Description string `json:"description"`
+		PCIAddress  string `json:"pci_address"`
+		AttachedVM  int32  `json:"attached_vm"`
+		IOMMU       string `json:"iommu_group"`
+		Driver      string `json:"driver"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&devices); err != nil {
+		return fmt.Errorf("decode error: %w", err)
+	}
+
+	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "ID\tTYPE\tDESCRIPTION\tPCI\tATTACHED_VM\tIOMMU\tDRIVER")
+	for _, d := range devices {
+		vmStr := "-"
+		if d.AttachedVM != 0 {
+			vmStr = fmt.Sprintf("%d", d.AttachedVM)
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			d.ID, d.DeviceType, d.Description, d.PCIAddress, vmStr, d.IOMMU, d.Driver)
+	}
+	tw.Flush()
+	return nil
+}
+
+func deviceAttach(cmd *cobra.Command, args []string) error {
+	id, _ := cmd.Flags().GetString("id")
+	vmHandle, _ := cmd.Flags().GetInt32("vm")
+	if id == "" {
+		return fmt.Errorf("--id is required")
+	}
+
+	body := map[string]interface{}{
+		"vm_handle": vmHandle,
+	}
+	resp, err := apiPost(fmt.Sprintf("/api/v1/devices/%s/attach", id), body)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if err := checkResponse(resp); err != nil {
+		return err
+	}
+	fmt.Printf("Device '%s' attached to VM %d.\n", id, vmHandle)
+	return nil
+}
+
+func deviceDetach(cmd *cobra.Command, args []string) error {
+	id, _ := cmd.Flags().GetString("id")
+	if id == "" {
+		return fmt.Errorf("--id is required")
+	}
+
+	resp, err := apiPost(fmt.Sprintf("/api/v1/devices/%s/detach", id), nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if err := checkResponse(resp); err != nil {
+		return err
+	}
+	fmt.Printf("Device '%s' detached.\n", id)
+	return nil
+}
+
+// ── Cluster handlers ─────────────────────────────────────
+
+func clusterStatus(cmd *cobra.Command, args []string) error {
+	resp, err := apiGet("/api/v1/cluster/status")
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	var status struct {
+		Quorum      bool   `json:"quorum"`
+		NodeCount   int    `json:"node_count"`
+		OnlineCount int    `json:"online_count"`
+		Leader      string `json:"leader"`
+		Status      string `json:"status"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+		return fmt.Errorf("decode error: %w", err)
+	}
+
+	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintf(tw, "STATUS\t%s\n", status.Status)
+	fmt.Fprintf(tw, "QUORUM\t%v\n", status.Quorum)
+	fmt.Fprintf(tw, "NODES\t%d\n", status.NodeCount)
+	fmt.Fprintf(tw, "ONLINE\t%d\n", status.OnlineCount)
+	fmt.Fprintf(tw, "LEADER\t%s\n", status.Leader)
+	tw.Flush()
+	return nil
+}
+
+func clusterNodeList(cmd *cobra.Command, args []string) error {
+	resp, err := apiGet("/api/v1/cluster/nodes")
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	var nodes []struct {
+		Name       string `json:"name"`
+		Status     string `json:"status"`
+		IsLeader   bool   `json:"is_leader"`
+		VMCount    int    `json:"vm_count"`
+		FenceAgent string `json:"fence_agent"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&nodes); err != nil {
+		return fmt.Errorf("decode error: %w", err)
+	}
+
+	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "NAME\tSTATUS\tLEADER\tVMs\tFENCE_AGENT")
+	for _, n := range nodes {
+		leader := ""
+		if n.IsLeader {
+			leader = "*"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\n",
+			n.Name, n.Status, leader, n.VMCount, n.FenceAgent)
+	}
+	tw.Flush()
+	return nil
+}
+
+func clusterFence(cmd *cobra.Command, args []string) error {
+	node, _ := cmd.Flags().GetString("node")
+	reason, _ := cmd.Flags().GetString("reason")
+	action, _ := cmd.Flags().GetString("action")
+	if node == "" {
+		return fmt.Errorf("--node is required")
+	}
+
+	body := map[string]interface{}{
+		"reason": reason,
+		"action": action,
+	}
+	resp, err := apiPost(fmt.Sprintf("/api/v1/cluster/fence/%s", node), body)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if err := checkResponse(resp); err != nil {
+		return err
+	}
+	fmt.Printf("Node '%s' fenced (action: %s, reason: %s).\n", node, action, reason)
+	return nil
+}
+
+// ── Utilities ────────────────────────────────────────────
+
+func formatBytes(b uint64) string {
+	const (
+		KB = 1024
+		MB = KB * 1024
+		GB = MB * 1024
+		TB = GB * 1024
+	)
+	switch {
+	case b >= TB:
+		return fmt.Sprintf("%.1fTB", float64(b)/float64(TB))
+	case b >= GB:
+		return fmt.Sprintf("%.1fGB", float64(b)/float64(GB))
+	case b >= MB:
+		return fmt.Sprintf("%.1fMB", float64(b)/float64(MB))
+	case b >= KB:
+		return fmt.Sprintf("%.1fKB", float64(b)/float64(KB))
+	default:
+		return fmt.Sprintf("%dB", b)
+	}
 }
