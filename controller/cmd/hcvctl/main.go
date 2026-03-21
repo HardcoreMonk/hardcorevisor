@@ -370,13 +370,17 @@ func nodeList(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("decode error: %w", err)
 	}
 
-	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tSTATUS\tCPU%\tMEM%\tVMs")
+	headers := []string{"NAME", "STATUS", "CPU%", "MEM%", "VMs"}
+	var rows [][]string
 	for _, n := range nodes {
-		fmt.Fprintf(tw, "%s\t%s\t%.1f%%\t%.1f%%\t%d\n",
-			n.Name, n.Status, n.CPUPercent, n.MemoryPercent, n.VMCount)
+		rows = append(rows, []string{
+			n.Name, n.Status,
+			fmt.Sprintf("%.1f%%", n.CPUPercent),
+			fmt.Sprintf("%.1f%%", n.MemoryPercent),
+			fmt.Sprintf("%d", n.VMCount),
+		})
 	}
-	tw.Flush()
+	printOutput(nodes, headers, rows)
 	return nil
 }
 
@@ -400,13 +404,14 @@ func storagePoolList(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("decode error: %w", err)
 	}
 
-	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tTYPE\tTOTAL\tUSED\tHEALTH")
+	headers := []string{"NAME", "TYPE", "TOTAL", "USED", "HEALTH"}
+	var rows [][]string
 	for _, p := range pools {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
-			p.Name, p.PoolType, formatBytes(p.TotalBytes), formatBytes(p.UsedBytes), p.Health)
+		rows = append(rows, []string{
+			p.Name, p.PoolType, formatBytes(p.TotalBytes), formatBytes(p.UsedBytes), p.Health,
+		})
 	}
-	tw.Flush()
+	printOutput(pools, headers, rows)
 	return nil
 }
 
@@ -429,13 +434,14 @@ func storageVolumeList(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("decode error: %w", err)
 	}
 
-	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "ID\tPOOL\tNAME\tSIZE\tFORMAT\tPATH")
+	headers := []string{"ID", "POOL", "NAME", "SIZE", "FORMAT", "PATH"}
+	var rows [][]string
 	for _, v := range volumes {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
-			v.ID, v.Pool, v.Name, formatBytes(v.SizeBytes), v.Format, v.Path)
+		rows = append(rows, []string{
+			v.ID, v.Pool, v.Name, formatBytes(v.SizeBytes), v.Format, v.Path,
+		})
 	}
-	tw.Flush()
+	printOutput(volumes, headers, rows)
 	return nil
 }
 
@@ -483,13 +489,14 @@ func networkZoneList(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("decode error: %w", err)
 	}
 
-	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tTYPE\tMTU\tBRIDGE\tSTATUS")
+	headers := []string{"NAME", "TYPE", "MTU", "BRIDGE", "STATUS"}
+	var rows [][]string
 	for _, z := range zones {
-		fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\n",
-			z.Name, z.ZoneType, z.MTU, z.Bridge, z.Status)
+		rows = append(rows, []string{
+			z.Name, z.ZoneType, fmt.Sprintf("%d", z.MTU), z.Bridge, z.Status,
+		})
 	}
-	tw.Flush()
+	printOutput(zones, headers, rows)
 	return nil
 }
 
@@ -512,13 +519,14 @@ func networkVnetList(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("decode error: %w", err)
 	}
 
-	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "ID\tZONE\tNAME\tTAG\tSUBNET\tSTATUS")
+	headers := []string{"ID", "ZONE", "NAME", "TAG", "SUBNET", "STATUS"}
+	var rows [][]string
 	for _, v := range vnets {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\t%s\n",
-			v.ID, v.Zone, v.Name, v.Tag, v.Subnet, v.Status)
+		rows = append(rows, []string{
+			v.ID, v.Zone, v.Name, fmt.Sprintf("%d", v.Tag), v.Subnet, v.Status,
+		})
 	}
-	tw.Flush()
+	printOutput(vnets, headers, rows)
 	return nil
 }
 
@@ -543,13 +551,14 @@ func networkFirewallList(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("decode error: %w", err)
 	}
 
-	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "ID\tDIR\tACTION\tPROTO\tSOURCE\tDEST\tDPORT\tENABLED")
+	headers := []string{"ID", "DIR", "ACTION", "PROTO", "SOURCE", "DEST", "DPORT", "ENABLED"}
+	var rows [][]string
 	for _, r := range rules {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%v\n",
-			r.ID, r.Direction, r.Action, r.Protocol, r.Source, r.Dest, r.DPort, r.Enabled)
+		rows = append(rows, []string{
+			r.ID, r.Direction, r.Action, r.Protocol, r.Source, r.Dest, r.DPort, fmt.Sprintf("%v", r.Enabled),
+		})
 	}
-	tw.Flush()
+	printOutput(rules, headers, rows)
 	return nil
 }
 
@@ -580,17 +589,18 @@ func deviceList(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("decode error: %w", err)
 	}
 
-	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "ID\tTYPE\tDESCRIPTION\tPCI\tATTACHED_VM\tIOMMU\tDRIVER")
+	headers := []string{"ID", "TYPE", "DESCRIPTION", "PCI", "ATTACHED_VM", "IOMMU", "DRIVER"}
+	var rows [][]string
 	for _, d := range devices {
 		vmStr := "-"
 		if d.AttachedVM != 0 {
 			vmStr = fmt.Sprintf("%d", d.AttachedVM)
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			d.ID, d.DeviceType, d.Description, d.PCIAddress, vmStr, d.IOMMU, d.Driver)
+		rows = append(rows, []string{
+			d.ID, d.DeviceType, d.Description, d.PCIAddress, vmStr, d.IOMMU, d.Driver,
+		})
 	}
-	tw.Flush()
+	printOutput(devices, headers, rows)
 	return nil
 }
 
@@ -654,13 +664,15 @@ func clusterStatus(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("decode error: %w", err)
 	}
 
-	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintf(tw, "STATUS\t%s\n", status.Status)
-	fmt.Fprintf(tw, "QUORUM\t%v\n", status.Quorum)
-	fmt.Fprintf(tw, "NODES\t%d\n", status.NodeCount)
-	fmt.Fprintf(tw, "ONLINE\t%d\n", status.OnlineCount)
-	fmt.Fprintf(tw, "LEADER\t%s\n", status.Leader)
-	tw.Flush()
+	headers := []string{"FIELD", "VALUE"}
+	rows := [][]string{
+		{"STATUS", status.Status},
+		{"QUORUM", fmt.Sprintf("%v", status.Quorum)},
+		{"NODES", fmt.Sprintf("%d", status.NodeCount)},
+		{"ONLINE", fmt.Sprintf("%d", status.OnlineCount)},
+		{"LEADER", status.Leader},
+	}
+	printOutput(status, headers, rows)
 	return nil
 }
 
@@ -682,17 +694,18 @@ func clusterNodeList(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("decode error: %w", err)
 	}
 
-	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tSTATUS\tLEADER\tVMs\tFENCE_AGENT")
+	headers := []string{"NAME", "STATUS", "LEADER", "VMs", "FENCE_AGENT"}
+	var rows [][]string
 	for _, n := range nodes {
 		leader := ""
 		if n.IsLeader {
 			leader = "*"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\n",
-			n.Name, n.Status, leader, n.VMCount, n.FenceAgent)
+		rows = append(rows, []string{
+			n.Name, n.Status, leader, fmt.Sprintf("%d", n.VMCount), n.FenceAgent,
+		})
 	}
-	tw.Flush()
+	printOutput(nodes, headers, rows)
 	return nil
 }
 
