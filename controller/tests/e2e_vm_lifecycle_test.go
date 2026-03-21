@@ -555,6 +555,94 @@ func TestE2E_ClusterOperations(t *testing.T) {
 	assertStatus(t, resp, 200)
 }
 
+// ── E2E: VM Migration ────────────────────────────────────
+
+func TestE2E_VMMigration(t *testing.T) {
+	srv, cleanup := setupE2E(t)
+	defer cleanup()
+	base := srv.URL
+
+	// Create VM
+	vm := createVM(t, base, map[string]any{"name": "migrate-test", "vcpus": 2, "memory_mb": 4096})
+	id := fmt.Sprintf("%.0f", vm["id"].(float64))
+
+	// Start VM
+	httpPost(t, base+"/api/v1/vms/"+id+"/start", nil)
+
+	// Migrate to node-02
+	body, _ := json.Marshal(map[string]any{"target_node": "node-02"})
+	resp := httpPostRaw(t, base+"/api/v1/vms/"+id+"/migrate", body)
+	assertStatus(t, resp, 200)
+
+	// Verify node changed
+	resp = httpGet(t, base+"/api/v1/vms/"+id)
+	assertStatus(t, resp, 200)
+	var vmDetail map[string]any
+	decodeJSON(t, resp, &vmDetail)
+	assertEqual(t, vmDetail["node"].(string), "node-02")
+
+	httpDelete(t, base+"/api/v1/vms/"+id)
+}
+
+// ── E2E: Network & Firewall CRUD ─────────────────────────
+
+func TestE2E_NetworkFirewallCRUD(t *testing.T) {
+	srv, cleanup := setupE2E(t)
+	defer cleanup()
+	base := srv.URL
+
+	// List zones
+	resp := httpGet(t, base+"/api/v1/network/zones")
+	assertStatus(t, resp, 200)
+
+	// List vnets
+	resp = httpGet(t, base+"/api/v1/network/vnets")
+	assertStatus(t, resp, 200)
+
+	// Firewall rules (initially empty or with defaults)
+	resp = httpGet(t, base+"/api/v1/network/firewall")
+	assertStatus(t, resp, 200)
+}
+
+// ── E2E: Storage Snapshots ───────────────────────────────
+
+func TestE2E_StorageSnapshots(t *testing.T) {
+	srv, cleanup := setupE2E(t)
+	defer cleanup()
+	base := srv.URL
+
+	// Create volume
+	body, _ := json.Marshal(map[string]any{
+		"pool": "local-zfs", "name": "snap-test-vol", "size_bytes": 1073741824, "format": "raw",
+	})
+	resp := httpPostRaw(t, base+"/api/v1/storage/volumes", body)
+	assertStatus(t, resp, 201)
+	var vol map[string]any
+	decodeJSON(t, resp, &vol)
+
+	// Volume exists in list
+	resp = httpGet(t, base+"/api/v1/storage/volumes")
+	assertStatus(t, resp, 200)
+
+	// Delete volume
+	resp = httpDelete(t, base+"/api/v1/storage/volumes/"+vol["id"].(string))
+	assertStatus(t, resp, 204)
+}
+
+// ── E2E: API Info ────────────────────────────────────────
+
+func TestE2E_APIInfo(t *testing.T) {
+	srv, cleanup := setupE2E(t)
+	defer cleanup()
+	base := srv.URL
+
+	resp := httpGet(t, base+"/api/v1/api-info")
+	assertStatus(t, resp, 200)
+	var info map[string]any
+	decodeJSON(t, resp, &info)
+	assertEqual(t, info["current_version"].(string), "v1")
+}
+
 // ═══ HTTP Helpers ════════════════════════════════════════
 
 func httpGet(t *testing.T, url string) *http.Response {

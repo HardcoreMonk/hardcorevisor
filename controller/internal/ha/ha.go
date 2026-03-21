@@ -1,12 +1,11 @@
 // Package ha — HA Manager for cluster health and fencing
 //
-// In-memory implementation for dev/test. Manages cluster node
-// health monitoring, quorum tracking, and fencing operations.
+// Supports pluggable drivers (memory, etcd). Default is in-memory
+// for dev/test. Manages cluster node health monitoring, quorum
+// tracking, and fencing operations.
 package ha
 
 import (
-	"fmt"
-	"sync"
 	"time"
 )
 
@@ -33,11 +32,11 @@ type ClusterNode struct {
 
 // ClusterStatus summarizes the HA cluster state
 type ClusterStatus struct {
-	Quorum    bool   `json:"quorum"`
-	NodeCount int    `json:"node_count"`
-	OnlineCount int  `json:"online_count"`
-	Leader    string `json:"leader"`
-	Status    string `json:"status"` // healthy, degraded, critical
+	Quorum      bool   `json:"quorum"`
+	NodeCount   int    `json:"node_count"`
+	OnlineCount int    `json:"online_count"`
+	Leader      string `json:"leader"`
+	Status      string `json:"status"` // healthy, degraded, critical
 }
 
 // FenceEvent records a fencing operation
@@ -53,104 +52,49 @@ type FenceEvent struct {
 // ── Service ──────────────────────────────────────────
 
 // Service manages HA cluster operations.
+// It delegates to an HADriver for the actual backend operations.
 type Service struct {
-	mu          sync.RWMutex
-	nodes       map[string]*ClusterNode
-	fenceEvents []FenceEvent
-	fenceNextID int
+	driver HADriver
 }
 
-// NewService creates an HA service with default cluster nodes.
+// NewService creates an HA service with the default in-memory driver.
 func NewService() *Service {
-	now := time.Now()
-	s := &Service{
-		nodes:       make(map[string]*ClusterNode),
-		fenceEvents: make([]FenceEvent, 0),
-		fenceNextID: 1,
-	}
+	return NewServiceWithDriver(newMemoryDriver())
+}
 
-	s.nodes["node-01"] = &ClusterNode{
-		Name: "node-01", Status: NodeOnline, LastSeen: now,
-		IsLeader: true, VMCount: 2, FenceAgent: "ipmi",
-	}
-	s.nodes["node-02"] = &ClusterNode{
-		Name: "node-02", Status: NodeOnline, LastSeen: now,
-		IsLeader: false, VMCount: 1, FenceAgent: "ipmi",
-	}
-	s.nodes["node-03"] = &ClusterNode{
-		Name: "node-03", Status: NodeOnline, LastSeen: now,
-		IsLeader: false, VMCount: 0, FenceAgent: "ipmi",
-	}
-
-	return s
+// NewServiceWithDriver creates an HA service with the specified driver.
+func NewServiceWithDriver(driver HADriver) *Service {
+	return &Service{driver: driver}
 }
 
 // GetClusterStatus returns the aggregated cluster health.
 func (s *Service) GetClusterStatus() *ClusterStatus {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	cs := &ClusterStatus{NodeCount: len(s.nodes)}
-	for _, n := range s.nodes {
-		if n.Status == NodeOnline {
-			cs.OnlineCount++
-		}
-		if n.IsLeader {
-			cs.Leader = n.Name
-		}
-	}
-	cs.Quorum = cs.OnlineCount > cs.NodeCount/2
-	if cs.OnlineCount == cs.NodeCount {
-		cs.Status = "healthy"
-	} else if cs.Quorum {
-		cs.Status = "degraded"
-	} else {
-		cs.Status = "critical"
+	cs, err := s.driver.GetClusterStatus()
+	if err != nil {
+		return &ClusterStatus{Status: "unknown"}
 	}
 	return cs
 }
 
 // ListNodes returns all cluster nodes.
 func (s *Service) ListNodes() []*ClusterNode {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	result := make([]*ClusterNode, 0, len(s.nodes))
-	for _, n := range s.nodes {
-		result = append(result, n)
+	nodes, err := s.driver.ListNodes()
+	if err != nil {
+		return nil
 	}
-	return result
+	return nodes
 }
 
 // FenceNode initiates a fencing operation on a node.
 func (s *Service) FenceNode(nodeName, reason, action string) (*FenceEvent, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	node, ok := s.nodes[nodeName]
-	if !ok {
-		return nil, fmt.Errorf("node not found: %s", nodeName)
-	}
-
-	event := FenceEvent{
-		ID:        fmt.Sprintf("fence-%d", s.fenceNextID),
-		NodeName:  nodeName,
-		Reason:    reason,
-		Action:    action,
-		Success:   true,
-		Timestamp: time.Now(),
-	}
-	s.fenceNextID++
-	s.fenceEvents = append(s.fenceEvents, event)
-
-	node.Status = NodeFenced
-	return &event, nil
+	return s.driver.FenceNode(nodeName, reason, action)
 }
 
 // ListFenceEvents returns fence history.
 func (s *Service) ListFenceEvents() []FenceEvent {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	result := make([]FenceEvent, len(s.fenceEvents))
-	copy(result, s.fenceEvents)
-	return result
+	events, err := s.driver.ListFenceEvents()
+	if err != nil {
+		return nil
+	}
+	return events
 }

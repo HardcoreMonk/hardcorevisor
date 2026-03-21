@@ -2,6 +2,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/tls"
 	"encoding/json"
@@ -281,7 +282,22 @@ To load fish completions:
 	backupDeleteCmd.Flags().String("id", "", "Backup ID to delete")
 	backupCmd.AddCommand(backupDeleteCmd)
 
-	root.AddCommand(vmCmd, nodeCmd, versionCmd, storageCmd, networkCmd, deviceCmd, clusterCmd, completionCmd, backupCmd)
+	// ── status subcommand ──
+	statusCmd := &cobra.Command{
+		Use:   "status",
+		Short: "Show system status and statistics",
+		RunE:  systemStatus,
+	}
+
+	// ── shell subcommand ──
+	shellCmd := &cobra.Command{
+		Use:   "shell",
+		Short: "Interactive shell mode",
+		Long:  "Start an interactive REPL for HardCoreVisor management.",
+		RunE:  runShell,
+	}
+
+	root.AddCommand(vmCmd, nodeCmd, versionCmd, storageCmd, networkCmd, deviceCmd, clusterCmd, completionCmd, backupCmd, statusCmd, shellCmd)
 
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
@@ -930,6 +946,363 @@ func backupDelete(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	fmt.Printf("Backup '%s' deleted.\n", id)
+	return nil
+}
+
+// ── Status handler ────────────────────────────────────────
+
+func systemStatus(cmd *cobra.Command, args []string) error {
+	return handleShellStatus()
+}
+
+// ── Interactive Shell ────────────────────────────────────
+
+func runShell(cmd *cobra.Command, args []string) error {
+	fmt.Println("HardCoreVisor Interactive Shell")
+	fmt.Println("Type 'help' for commands, 'exit' to quit")
+	fmt.Printf("Connected to: %s\n\n", apiAddr)
+
+	scanner := bufio.NewScanner(os.Stdin)
+	for {
+		fmt.Print("hcv> ")
+		if !scanner.Scan() {
+			break
+		}
+
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		if line == "exit" || line == "quit" {
+			break
+		}
+
+		if err := executeShellCommand(line); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		}
+	}
+	return nil
+}
+
+func executeShellCommand(line string) error {
+	parts := strings.Fields(line)
+	if len(parts) == 0 {
+		return nil
+	}
+
+	switch parts[0] {
+	case "help":
+		printShellHelp()
+	case "vm":
+		return handleShellVM(parts[1:])
+	case "storage":
+		return handleShellStorage(parts[1:])
+	case "network":
+		return handleShellNetwork(parts[1:])
+	case "device":
+		return handleShellDevice(parts[1:])
+	case "cluster":
+		return handleShellCluster(parts[1:])
+	case "backup":
+		return handleShellBackup(parts[1:])
+	case "version":
+		return handleShellVersion()
+	case "status":
+		return handleShellStatus()
+	default:
+		fmt.Printf("Unknown command: %s. Type 'help' for usage.\n", parts[0])
+	}
+	return nil
+}
+
+func printShellHelp() {
+	fmt.Println(`Commands:
+  vm list                 List all VMs
+  vm create <name>        Create a VM
+  vm start <id>           Start a VM
+  vm stop <id>            Stop a VM
+  vm delete <id>          Delete a VM
+  vm migrate <id> <node>  Migrate VM
+  storage pool list       List storage pools
+  storage volume list     List storage volumes
+  network zone list       List SDN zones
+  network vnet list       List virtual networks
+  network firewall list   List firewall rules
+  device list             List devices
+  cluster status          Cluster status
+  cluster node list       List cluster nodes
+  backup list             List backups
+  version                 Show version
+  status                  System status
+  help                    Show this help
+  exit                    Exit shell`)
+}
+
+func handleShellVM(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: vm list|create|start|stop|delete|migrate")
+	}
+	switch args[0] {
+	case "list":
+		return vmList(nil, nil)
+	case "create":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: vm create <name>")
+		}
+		body := map[string]any{"name": args[1], "vcpus": 2, "memory_mb": 4096}
+		resp, err := apiPost("/api/v1/vms", body)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+		if err := checkResponse(resp); err != nil {
+			return err
+		}
+		fmt.Printf("VM '%s' created.\n", args[1])
+		return nil
+	case "start":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: vm start <id>")
+		}
+		return vmAction(args[1], "start")
+	case "stop":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: vm stop <id>")
+		}
+		return vmAction(args[1], "stop")
+	case "delete":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: vm delete <id>")
+		}
+		resp, err := apiDelete(fmt.Sprintf("/api/v1/vms/%s", args[1]))
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+		if err := checkResponse(resp); err != nil {
+			return err
+		}
+		fmt.Printf("VM '%s' deleted.\n", args[1])
+		return nil
+	case "migrate":
+		if len(args) < 3 {
+			return fmt.Errorf("usage: vm migrate <id> <node>")
+		}
+		body := map[string]any{"target_node": args[2]}
+		resp, err := apiPost(fmt.Sprintf("/api/v1/vms/%s/migrate", args[1]), body)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+		if err := checkResponse(resp); err != nil {
+			return err
+		}
+		fmt.Printf("VM %s migrated to node '%s'.\n", args[1], args[2])
+		return nil
+	default:
+		return fmt.Errorf("unknown vm command: %s", args[0])
+	}
+}
+
+func handleShellStorage(args []string) error {
+	if len(args) < 2 {
+		return fmt.Errorf("usage: storage pool list | storage volume list")
+	}
+	switch args[0] {
+	case "pool":
+		if args[1] == "list" {
+			return storagePoolList(nil, nil)
+		}
+		return fmt.Errorf("unknown storage pool command: %s", args[1])
+	case "volume":
+		if args[1] == "list" {
+			return storageVolumeList(nil, nil)
+		}
+		return fmt.Errorf("unknown storage volume command: %s", args[1])
+	default:
+		return fmt.Errorf("unknown storage command: %s", args[0])
+	}
+}
+
+func handleShellNetwork(args []string) error {
+	if len(args) < 2 {
+		return fmt.Errorf("usage: network zone list | network vnet list | network firewall list")
+	}
+	switch args[0] {
+	case "zone":
+		if args[1] == "list" {
+			return networkZoneList(nil, nil)
+		}
+		return fmt.Errorf("unknown network zone command: %s", args[1])
+	case "vnet":
+		if args[1] == "list" {
+			return networkVnetList(nil, nil)
+		}
+		return fmt.Errorf("unknown network vnet command: %s", args[1])
+	case "firewall":
+		if args[1] == "list" {
+			return networkFirewallList(nil, nil)
+		}
+		return fmt.Errorf("unknown network firewall command: %s", args[1])
+	default:
+		return fmt.Errorf("unknown network command: %s", args[0])
+	}
+}
+
+func handleShellDevice(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: device list")
+	}
+	switch args[0] {
+	case "list":
+		return shellDeviceList()
+	default:
+		return fmt.Errorf("unknown device command: %s", args[0])
+	}
+}
+
+func shellDeviceList() error {
+	resp, err := apiGet("/api/v1/devices")
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	var devices []struct {
+		ID          string `json:"id"`
+		DeviceType  string `json:"device_type"`
+		Description string `json:"description"`
+		PCIAddress  string `json:"pci_address"`
+		AttachedVM  int32  `json:"attached_vm"`
+		IOMMU       string `json:"iommu_group"`
+		Driver      string `json:"driver"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&devices); err != nil {
+		return fmt.Errorf("decode error: %w", err)
+	}
+
+	headers := []string{"ID", "TYPE", "DESCRIPTION", "PCI", "ATTACHED_VM", "IOMMU", "DRIVER"}
+	var rows [][]string
+	for _, d := range devices {
+		vmStr := "-"
+		if d.AttachedVM != 0 {
+			vmStr = fmt.Sprintf("%d", d.AttachedVM)
+		}
+		rows = append(rows, []string{
+			d.ID, d.DeviceType, d.Description, d.PCIAddress, vmStr, d.IOMMU, d.Driver,
+		})
+	}
+	printOutput(devices, headers, rows)
+	return nil
+}
+
+func handleShellCluster(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: cluster status | cluster node list")
+	}
+	switch args[0] {
+	case "status":
+		return clusterStatus(nil, nil)
+	case "node":
+		if len(args) < 2 || args[1] != "list" {
+			return fmt.Errorf("usage: cluster node list")
+		}
+		return clusterNodeList(nil, nil)
+	default:
+		return fmt.Errorf("unknown cluster command: %s", args[0])
+	}
+}
+
+func handleShellBackup(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: backup list")
+	}
+	switch args[0] {
+	case "list":
+		return backupList(nil, nil)
+	default:
+		return fmt.Errorf("unknown backup command: %s", args[0])
+	}
+}
+
+func handleShellVersion() error {
+	fmt.Printf("hcvctl %s (commit: %s, built: %s)\n", version, commit, buildDate)
+	return nil
+}
+
+func handleShellStatus() error {
+	resp, err := apiGet("/api/v1/system/stats")
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if err := checkResponse(resp); err != nil {
+		return err
+	}
+
+	var stats map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&stats); err != nil {
+		return fmt.Errorf("decode error: %w", err)
+	}
+
+	switch outputFormat {
+	case "json":
+		out, _ := json.MarshalIndent(stats, "", "  ")
+		fmt.Println(string(out))
+	case "yaml":
+		out, _ := yaml.Marshal(stats)
+		fmt.Print(string(out))
+	default:
+		tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(tw, "SECTION\tMETRIC\tVALUE")
+
+		if uptime, ok := stats["uptime_seconds"].(float64); ok {
+			fmt.Fprintf(tw, "System\tUptime\t%.0fs\n", uptime)
+		}
+
+		if vms, ok := stats["vms"].(map[string]any); ok {
+			if total, ok := vms["total"].(float64); ok {
+				fmt.Fprintf(tw, "VMs\tTotal\t%.0f\n", total)
+			}
+			if byState, ok := vms["by_state"].(map[string]any); ok {
+				for state, count := range byState {
+					if c, ok := count.(float64); ok {
+						fmt.Fprintf(tw, "VMs\t%s\t%.0f\n", state, c)
+					}
+				}
+			}
+		}
+
+		if stor, ok := stats["storage"].(map[string]any); ok {
+			if pools, ok := stor["pools"].(float64); ok {
+				fmt.Fprintf(tw, "Storage\tPools\t%.0f\n", pools)
+			}
+			if volumes, ok := stor["volumes"].(float64); ok {
+				fmt.Fprintf(tw, "Storage\tVolumes\t%.0f\n", volumes)
+			}
+		}
+
+		if net, ok := stats["network"].(map[string]any); ok {
+			if zones, ok := net["zones"].(float64); ok {
+				fmt.Fprintf(tw, "Network\tZones\t%.0f\n", zones)
+			}
+			if vnets, ok := net["vnets"].(float64); ok {
+				fmt.Fprintf(tw, "Network\tVNets\t%.0f\n", vnets)
+			}
+			if rules, ok := net["firewall_rules"].(float64); ok {
+				fmt.Fprintf(tw, "Network\tFirewall Rules\t%.0f\n", rules)
+			}
+		}
+
+		if devices, ok := stats["devices"].(float64); ok {
+			fmt.Fprintf(tw, "Devices\tTotal\t%.0f\n", devices)
+		}
+		if backups, ok := stats["backups"].(float64); ok {
+			fmt.Fprintf(tw, "Backups\tTotal\t%.0f\n", backups)
+		}
+
+		tw.Flush()
+	}
 	return nil
 }
 

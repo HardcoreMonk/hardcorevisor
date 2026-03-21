@@ -9,18 +9,24 @@ import (
 
 // Config is the top-level configuration for the HardCoreVisor controller.
 type Config struct {
-	API     APIConfig     `yaml:"api"`
-	GRPC    GRPCConfig    `yaml:"grpc"`
-	Etcd    EtcdConfig    `yaml:"etcd"`
-	TLS     TLSConfig     `yaml:"tls"`
-	Auth    AuthConfig    `yaml:"auth"`
-	Log     LogConfig     `yaml:"log"`
-	Storage StorageConfig `yaml:"storage"`
+	API        APIConfig        `yaml:"api"`
+	GRPC       GRPCConfig       `yaml:"grpc"`
+	Etcd       EtcdConfig       `yaml:"etcd"`
+	TLS        TLSConfig        `yaml:"tls"`
+	Auth       AuthConfig       `yaml:"auth"`
+	Log        LogConfig        `yaml:"log"`
+	Storage    StorageConfig    `yaml:"storage"`
+	Peripheral PeripheralConfig `yaml:"peripheral"`
 }
 
 // StorageConfig holds storage backend settings.
 type StorageConfig struct {
 	Driver string `yaml:"driver"` // "memory" (default), "zfs"
+}
+
+// PeripheralConfig holds peripheral backend settings.
+type PeripheralConfig struct {
+	Driver string `yaml:"driver"` // "memory" (default), "sysfs"
 }
 
 // APIConfig holds REST API settings.
@@ -109,6 +115,9 @@ func Load(path string) (*Config, error) {
 	}
 	if v := os.Getenv("HCV_STORAGE_DRIVER"); v != "" {
 		cfg.Storage.Driver = v
+	}
+	if v := os.Getenv("HCV_PERIPHERAL_DRIVER"); v != "" {
+		cfg.Peripheral.Driver = v
 	}
 
 	return cfg, nil

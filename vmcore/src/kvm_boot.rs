@@ -348,6 +348,229 @@ fn cleanup(
     }
 }
 
+// KVM exit reason for MMIO
+const KVM_EXIT_MMIO: u32 = 6;
+
+/// Boot a Linux kernel from a bzImage file.
+/// Captures serial output (COM1, port 0x3F8) up to `max_output` bytes.
+/// Returns the captured output and exit reason.
+pub fn boot_linux(
+    bzimage_path: &str,
+    cmdline: &str,
+    memory_mb: u64,
+    max_output: usize,
+    max_instructions: u64,
+) -> Result<BootResult, KvmSysError> {
+    let sys = KvmSystem::open()?;
+    let vm = sys.create_vm()?;
+
+    let mem_size = (memory_mb as usize) * 1024 * 1024;
+
+    // mmap guest memory (page-aligned)
+    let guest_mem = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            mem_size,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+            -1,
+            0,
+        )
+    };
+    if guest_mem == libc::MAP_FAILED {
+        return Err(KvmSysError::MmapFailed(std::io::Error::last_os_error()));
+    }
+
+    // Map guest memory to VM
+    let region = KvmUserspaceMemoryRegion {
+        slot: 0,
+        flags: 0,
+        guest_phys_addr: 0,
+        memory_size: mem_size as u64,
+        userspace_addr: guest_mem as u64,
+    };
+    vm.set_user_memory_region(&region)?;
+
+    // Load bzImage using kvm_loader
+    let entry =
+        unsafe { crate::kvm_loader::load_bzimage(guest_mem as *mut u8, mem_size, bzimage_path) }
+            .map_err(|e| KvmSysError::Ioctl {
+                op: "load_bzimage",
+                source: std::io::Error::other(e.to_string()),
+            })?;
+
+    // Set command line if provided
+    if !cmdline.is_empty() {
+        unsafe {
+            crate::kvm_loader::set_cmdline(guest_mem as *mut u8, cmdline);
+        }
+    }
+
+    // Create vCPU
+    let mmap_size = sys.vcpu_mmap_size()?;
+    let vcpu = vm.create_vcpu(0, mmap_size)?;
+
+    // mmap the kvm_run structure
+    let kvm_run_ptr = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            mmap_size,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_SHARED,
+            vcpu.as_raw_fd(),
+            0,
+        )
+    };
+    if kvm_run_ptr == libc::MAP_FAILED {
+        unsafe {
+            libc::munmap(guest_mem, mem_size);
+        }
+        return Err(KvmSysError::MmapFailed(std::io::Error::last_os_error()));
+    }
+
+    // Set up special registers for 32-bit protected mode
+    let mut sregs = KvmSregs::default();
+    let ret = unsafe { libc::ioctl(vcpu.as_raw_fd(), KVM_GET_SREGS, &mut sregs) };
+    if ret < 0 {
+        cleanup(guest_mem, mem_size, kvm_run_ptr, mmap_size);
+        return Err(KvmSysError::Ioctl {
+            op: "KVM_GET_SREGS",
+            source: std::io::Error::last_os_error(),
+        });
+    }
+
+    // CR0: enable Protected Mode
+    sregs.cr0 |= 0x1; // PE bit
+
+    // CS: 32-bit code segment
+    sregs.cs.base = 0;
+    sregs.cs.limit = 0xFFFFFFFF;
+    sregs.cs.selector = 0x10;
+    sregs.cs.type_ = 0xB; // execute/read, accessed
+    sregs.cs.present = 1;
+    sregs.cs.dpl = 0;
+    sregs.cs.db = 1; // 32-bit
+    sregs.cs.s = 1; // code/data segment
+    sregs.cs.l = 0;
+    sregs.cs.g = 1; // 4KB granularity
+
+    // DS/ES/SS: data segments
+    let data_seg = KvmSegment {
+        base: 0,
+        limit: 0xFFFFFFFF,
+        selector: 0x18,
+        type_: 0x3, // read/write, accessed
+        present: 1,
+        dpl: 0,
+        db: 1,
+        s: 1,
+        l: 0,
+        g: 1,
+        avl: 0,
+        _unusable: 0,
+        _padding: 0,
+    };
+    sregs.ds = data_seg;
+    sregs.es = data_seg;
+    sregs.ss = data_seg;
+
+    let ret = unsafe { libc::ioctl(vcpu.as_raw_fd(), KVM_SET_SREGS, &sregs) };
+    if ret < 0 {
+        cleanup(guest_mem, mem_size, kvm_run_ptr, mmap_size);
+        return Err(KvmSysError::Ioctl {
+            op: "KVM_SET_SREGS",
+            source: std::io::Error::last_os_error(),
+        });
+    }
+
+    // Set general registers: RIP = entry point, RSI = boot_params address
+    let regs = KvmRegs {
+        rip: entry,
+        rsi: 0x7000, // BOOT_PARAMS_ADDR
+        rflags: 0x2,
+        ..KvmRegs::default()
+    };
+    let ret = unsafe { libc::ioctl(vcpu.as_raw_fd(), KVM_SET_REGS, &regs) };
+    if ret < 0 {
+        cleanup(guest_mem, mem_size, kvm_run_ptr, mmap_size);
+        return Err(KvmSysError::Ioctl {
+            op: "KVM_SET_REGS",
+            source: std::io::Error::last_os_error(),
+        });
+    }
+
+    // KVM_RUN loop with serial capture
+    let mut output = String::new();
+    let mut instructions = 0u64;
+    let exit_reason;
+
+    loop {
+        let ret = unsafe { libc::ioctl(vcpu.as_raw_fd(), KVM_RUN, 0) };
+        if ret < 0 {
+            cleanup(guest_mem, mem_size, kvm_run_ptr, mmap_size);
+            return Err(KvmSysError::Ioctl {
+                op: "KVM_RUN",
+                source: std::io::Error::last_os_error(),
+            });
+        }
+
+        let kvm_run = unsafe { &*(kvm_run_ptr as *const KvmRun) };
+        instructions += 1;
+
+        match kvm_run.exit_reason {
+            KVM_EXIT_IO => {
+                let io = unsafe { &*(kvm_run._exit_union.as_ptr() as *const KvmRunExitIo) };
+                if io.direction == KVM_EXIT_IO_OUT && io.port == SERIAL_PORT {
+                    let data_ptr =
+                        unsafe { (kvm_run_ptr as *const u8).add(io.data_offset as usize) };
+                    let byte = unsafe { *data_ptr };
+                    if output.len() < max_output {
+                        output.push(byte as char);
+                    }
+                }
+            }
+            KVM_EXIT_HLT => {
+                exit_reason = "HLT";
+                break;
+            }
+            KVM_EXIT_SHUTDOWN => {
+                exit_reason = "SHUTDOWN";
+                break;
+            }
+            KVM_EXIT_MMIO => {
+                // Ignore MMIO exits (no device backing)
+                exit_reason = "MMIO";
+                break;
+            }
+            other => {
+                exit_reason = "UNKNOWN";
+                tracing::warn!(exit_reason = other, "unexpected KVM exit");
+                break;
+            }
+        }
+
+        if instructions >= max_instructions {
+            exit_reason = "MAX_INSTRUCTIONS";
+            break;
+        }
+    }
+
+    cleanup(guest_mem, mem_size, kvm_run_ptr, mmap_size);
+
+    tracing::info!(
+        output_len = output.len(),
+        exit_reason,
+        instructions,
+        "Linux guest completed"
+    );
+
+    Ok(BootResult {
+        output,
+        exit_reason,
+        instructions_executed: instructions as u32,
+    })
+}
+
 // ═══════════════════════════════════════════════════════════
 // FFI
 // ═══════════════════════════════════════════════════════════
@@ -379,9 +602,78 @@ pub extern "C" fn hcv_kvm_boot_mini(out_buf: *mut u8, buf_len: u32) -> i32 {
     })
 }
 
+/// Boot a Linux kernel from a bzImage file.
+/// `bzimage_path` and `cmdline` are null-terminated C strings.
+/// Serial output is written to `out_buf` (null-terminated, max `buf_len` bytes).
+/// Returns number of bytes written on success, negative error code on failure.
+#[no_mangle]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn hcv_kvm_boot_linux(
+    bzimage_path: *const libc::c_char,
+    cmdline: *const libc::c_char,
+    memory_mb: u64,
+    out_buf: *mut u8,
+    buf_len: u32,
+) -> i32 {
+    crate::panic_barrier::catch(|| {
+        if bzimage_path.is_null() || out_buf.is_null() || buf_len == 0 {
+            return crate::panic_barrier::ErrorCode::InvalidArg as i32;
+        }
+
+        let path = unsafe { std::ffi::CStr::from_ptr(bzimage_path) };
+        let path_str = match path.to_str() {
+            Ok(s) => s,
+            Err(_) => return crate::panic_barrier::ErrorCode::InvalidArg as i32,
+        };
+
+        let cmd = if cmdline.is_null() {
+            ""
+        } else {
+            let cstr = unsafe { std::ffi::CStr::from_ptr(cmdline) };
+            match cstr.to_str() {
+                Ok(s) => s,
+                Err(_) => return crate::panic_barrier::ErrorCode::InvalidArg as i32,
+            }
+        };
+
+        match boot_linux(path_str, cmd, memory_mb, (buf_len - 1) as usize, 1_000_000) {
+            Ok(result) => {
+                let bytes = result.output.as_bytes();
+                let copy_len = std::cmp::min(bytes.len(), (buf_len - 1) as usize);
+                unsafe {
+                    std::ptr::copy_nonoverlapping(bytes.as_ptr(), out_buf, copy_len);
+                    *out_buf.add(copy_len) = 0; // null terminate
+                }
+                copy_len as i32
+            }
+            Err(e) => {
+                tracing::error!(%e, "Linux boot failed");
+                crate::panic_barrier::ErrorCode::KvmError as i32
+            }
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_boot_linux_missing_image() {
+        match boot_linux("/nonexistent/bzImage", "console=ttyS0", 64, 4096, 1000) {
+            Ok(_) => panic!("expected error for missing bzImage"),
+            Err(KvmSysError::OpenFailed(_)) => {
+                eprintln!("SKIP: /dev/kvm not available");
+            }
+            Err(KvmSysError::Ioctl { op, .. }) => {
+                assert_eq!(op, "load_bzimage", "expected load_bzimage error");
+            }
+            Err(e) => {
+                // Any other KVM error is acceptable (e.g., no /dev/kvm)
+                eprintln!("Got expected error: {e}");
+            }
+        }
+    }
 
     #[test]
     fn test_boot_mini_guest() {

@@ -223,6 +223,29 @@ pub unsafe fn load_bzimage(
     Ok(KERNEL_LOAD_ADDR as u64)
 }
 
+// ── Command line helper ──────────────────────────────────
+
+/// Set a custom kernel command line in guest memory.
+///
+/// Writes the command line string (null-terminated) to `CMDLINE_ADDR` and
+/// updates the `cmd_line_ptr` field in boot_params at `BOOT_PARAMS_ADDR`.
+///
+/// # Safety
+/// `guest_mem` must point to a valid, writable memory region large enough
+/// to hold boot_params and the command line.
+pub unsafe fn set_cmdline(guest_mem: *mut u8, cmdline: &str) {
+    // Write null-terminated command line at CMDLINE_ADDR
+    let cmdline_dest = guest_mem.add(CMDLINE_ADDR);
+    let cmdline_bytes = cmdline.as_bytes();
+    std::ptr::copy_nonoverlapping(cmdline_bytes.as_ptr(), cmdline_dest, cmdline_bytes.len());
+    // Null-terminate
+    *cmdline_dest.add(cmdline_bytes.len()) = 0;
+
+    // Update cmd_line_ptr in boot_params
+    let boot_params_ptr = guest_mem.add(BOOT_PARAMS_ADDR) as *mut BootParams;
+    (*boot_params_ptr).hdr.cmd_line_ptr = CMDLINE_ADDR as u32;
+}
+
 // ═══════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════

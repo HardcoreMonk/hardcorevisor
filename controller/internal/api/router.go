@@ -102,6 +102,9 @@ func NewRouter(svc *Services, rbacUsers ...map[string]auth.RBACUser) http.Handle
 		// Webhook
 		mux.HandleFunc("POST /api/v1/webhooks/alert", handleAlertWebhook)
 
+		// System Stats
+		mux.HandleFunc("GET /api/v1/system/stats", svc.handleSystemStats)
+
 		// API Info
 		mux.HandleFunc("GET /api/v1/api-info", handleAPIInfo)
 	}
@@ -654,6 +657,42 @@ func handleAPIInfo(w http.ResponseWriter, _ *http.Request) {
 		DocsURL:            "/docs/openapi.yaml",
 	}
 	writeJSON(w, http.StatusOK, info)
+}
+
+// ── System Stats Handler ─────────────────────────────
+
+var startTime = time.Now()
+
+func (svc *Services) handleSystemStats(w http.ResponseWriter, _ *http.Request) {
+	stats := map[string]any{
+		"version":        svc.Version,
+		"uptime_seconds": time.Since(startTime).Seconds(),
+		"vms": map[string]any{
+			"total":    len(svc.Compute.ListVMs()),
+			"by_state": countVMsByState(svc.Compute.ListVMs()),
+		},
+		"storage": map[string]any{
+			"pools":   len(svc.Storage.ListPools()),
+			"volumes": len(svc.Storage.ListVolumes("")),
+		},
+		"network": map[string]any{
+			"zones":          len(svc.Network.ListZones()),
+			"vnets":          len(svc.Network.ListVNets("")),
+			"firewall_rules": len(svc.Network.ListFirewallRules()),
+		},
+		"cluster": svc.HA.GetClusterStatus(),
+		"devices": len(svc.Peripheral.ListDevices("")),
+		"backups": len(svc.Backup.ListBackups()),
+	}
+	writeJSON(w, http.StatusOK, stats)
+}
+
+func countVMsByState(vms []*compute.VMInfo) map[string]int {
+	counts := make(map[string]int)
+	for _, vm := range vms {
+		counts[vm.State]++
+	}
+	return counts
 }
 
 // ── Helpers ──────────────────────────────────────────────

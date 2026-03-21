@@ -78,8 +78,23 @@ func main() {
 		storageSvc = storage.NewService()
 	}
 	networkSvc := network.NewService()
-	peripheralSvc := peripheral.NewService()
-	haSvc := ha.NewService()
+	var peripheralSvc *peripheral.Service
+	switch cfg.Peripheral.Driver {
+	case "sysfs":
+		slog.Info("Using sysfs peripheral driver")
+		peripheralSvc = peripheral.NewServiceWithDriver(peripheral.NewSysfsDriver())
+	default:
+		peripheralSvc = peripheral.NewService()
+	}
+
+	// HA service — use etcd driver when etcd is available
+	var haSvc *ha.Service
+	if _, isMemory := kvStore.(*store.MemoryStore); !isMemory {
+		slog.Info("Using etcd HA driver")
+		haSvc = ha.NewServiceWithDriver(ha.NewEtcdDriver(kvStore, "node-01"))
+	} else {
+		haSvc = ha.NewService()
+	}
 	backupSvc := backup.NewService(storageSvc)
 
 	// ── REST API ──
