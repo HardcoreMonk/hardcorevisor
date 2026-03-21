@@ -88,6 +88,9 @@ pub struct App {
     // VM Manager selection
     pub vm_selected: usize,
 
+    // VM detail view
+    pub show_vm_detail: bool,
+
     // VM creation form
     pub show_create_form: bool,
     pub create_form: CreateFormState,
@@ -125,6 +128,7 @@ impl App {
             cluster_nodes: Vec::new(),
             log_entries: vec!["[INFO] HardCoreVisor TUI started".to_string()],
             vm_selected: 0,
+            show_vm_detail: false,
             show_create_form: false,
             create_form: CreateFormState::new(),
             log_scroll: 0,
@@ -298,6 +302,18 @@ impl App {
             return;
         }
 
+        // When VM detail is open, only handle close actions
+        if self.show_vm_detail {
+            let action = Action::from_key(key_event.code, self.screen);
+            match action {
+                Action::Select | Action::Back => {
+                    self.show_vm_detail = false;
+                }
+                _ => {}
+            }
+            return;
+        }
+
         let action = Action::from_key(key_event.code, self.screen);
         match action {
             Action::Quit => self.running = false,
@@ -343,7 +359,12 @@ impl App {
             Action::Refresh => {
                 self.tick().await;
             }
-            Action::None | Action::Select | Action::Back | Action::Search | Action::Command => {}
+            Action::Select => {
+                if self.screen == Screen::VmManager && !self.vms.is_empty() {
+                    self.show_vm_detail = true;
+                }
+            }
+            Action::None | Action::Back | Action::Search | Action::Command => {}
         }
     }
 

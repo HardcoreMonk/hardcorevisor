@@ -42,6 +42,7 @@ pub mod panic_barrier;
 pub mod vcpu_mgr;
 pub mod virtio_blk;
 pub mod virtio_blk_io;
+pub mod virtio_net;
 pub mod virtio_split_queue;
 
 // Re-export FFI types for cbindgen

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/api"
+	"github.com/HardcoreMonk/hardcorevisor/controller/internal/backup"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/compute"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/ha"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/network"
@@ -37,12 +38,15 @@ func setupE2E(t *testing.T) (*httptest.Server, func()) {
 	selector.Register(qemuBackend)
 	computeSvc := compute.NewComputeService(selector, rustVMM)
 
+	storageSvc := storage.NewService()
+
 	svc := &api.Services{
 		Compute:    computeSvc,
-		Storage:    storage.NewService(),
+		Storage:    storageSvc,
 		Network:    network.NewService(),
 		Peripheral: peripheral.NewService(),
 		HA:         ha.NewService(),
+		Backup:     backup.NewService(storageSvc),
 		Version: api.VersionInfo{
 			Version:   "test-e2e",
 			GitCommit: "abc123",

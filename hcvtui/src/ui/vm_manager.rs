@@ -136,10 +136,104 @@ pub fn render(frame: &mut Frame, app: &App) {
     );
     frame.render_widget(help, chunks[2]);
 
+    // ── VM Detail Popup ──
+    if app.show_vm_detail {
+        render_vm_detail(frame, app, area);
+    }
+
     // ── Create VM Form Popup ──
     if app.show_create_form {
         render_create_form(frame, app, area);
     }
+}
+
+/// Render a centered popup showing VM details
+fn render_vm_detail(frame: &mut Frame, app: &App, area: Rect) {
+    let vm = match app.vms.get(app.vm_selected) {
+        Some(vm) => vm,
+        None => return,
+    };
+
+    let popup_width = (area.width * 60 / 100)
+        .max(40)
+        .min(area.width.saturating_sub(4));
+    let popup_height = (area.height * 70 / 100)
+        .max(12)
+        .min(area.height.saturating_sub(4));
+    let x = (area.width.saturating_sub(popup_width)) / 2;
+    let y = (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+    frame.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .title(" VM Detail ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+
+    let state_color = match vm.state.as_str() {
+        "running" => Color::Green,
+        "stopped" => Color::Red,
+        "paused" => Color::Yellow,
+        "configured" => Color::Blue,
+        _ => Color::DarkGray,
+    };
+
+    let label_style = Style::default()
+        .fg(Color::Yellow)
+        .add_modifier(Modifier::BOLD);
+    let value_style = Style::default().fg(Color::White);
+
+    let lines = vec![
+        Line::from(vec![
+            Span::styled("  ID:        ", label_style),
+            Span::styled(format!("{}", vm.id), value_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  Name:      ", label_style),
+            Span::styled(vm.name.clone(), value_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  State:     ", label_style),
+            Span::styled(vm.state.clone(), Style::default().fg(state_color)),
+        ]),
+        Line::from(vec![
+            Span::styled("  vCPUs:     ", label_style),
+            Span::styled(format!("{}", vm.vcpus), value_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  Memory:    ", label_style),
+            Span::styled(format!("{} MB", vm.memory_mb), value_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  Node:      ", label_style),
+            Span::styled(vm.node.clone(), value_style),
+        ]),
+        Line::from(vec![
+            Span::styled("  Backend:   ", label_style),
+            Span::styled(vm.backend.clone(), value_style),
+        ]),
+    ];
+
+    let detail_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(0),    // detail content
+            Constraint::Length(1), // footer
+        ])
+        .split(inner);
+
+    let detail = Paragraph::new(lines);
+    frame.render_widget(detail, detail_chunks[0]);
+
+    let footer = Paragraph::new(Line::from(vec![
+        Span::styled(" Esc", Style::default().fg(Color::Green)),
+        Span::raw(": close"),
+    ]));
+    frame.render_widget(footer, detail_chunks[1]);
 }
 
 /// Render a centered popup for the VM creation form

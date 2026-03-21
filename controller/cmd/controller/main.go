@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/api"
+	"github.com/HardcoreMonk/hardcorevisor/controller/internal/auth"
+	"github.com/HardcoreMonk/hardcorevisor/controller/internal/backup"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/compute"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/grpcapi"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/ha"
@@ -73,6 +75,7 @@ func main() {
 	networkSvc := network.NewService()
 	peripheralSvc := peripheral.NewService()
 	haSvc := ha.NewService()
+	backupSvc := backup.NewService(storageSvc)
 
 	// ── REST API ──
 	restServices := &api.Services{
@@ -81,6 +84,7 @@ func main() {
 		Network:    networkSvc,
 		Peripheral: peripheralSvc,
 		HA:         haSvc,
+		Backup:     backupSvc,
 		Version: api.VersionInfo{
 			Version:   version,
 			GitCommit: "dev",
@@ -88,7 +92,9 @@ func main() {
 			VMCore:    core.Version(),
 		},
 	}
-	router := api.NewRouter(restServices)
+	// Load RBAC users from environment
+	rbacUsers := auth.LoadUsers()
+	router := api.NewRouter(restServices, rbacUsers)
 
 	httpSrv := &http.Server{
 		Addr:         httpAddr,

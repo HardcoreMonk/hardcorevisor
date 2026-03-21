@@ -14,6 +14,8 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/HardcoreMonk/hardcorevisor/controller/internal/auth"
+	"github.com/HardcoreMonk/hardcorevisor/controller/internal/backup"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/compute"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/ha"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/metrics"
@@ -38,14 +40,16 @@ type Services struct {
 	Network    *network.Service
 	Peripheral *peripheral.Service
 	HA         *ha.Service
+	Backup     *backup.Service
 	Version    VersionInfo
 }
 
 // NewRouter creates the HTTP router with middleware.
 // If svc is nil, stub handlers are used (for backwards compatibility).
+// rbacUsers may be nil to disable RBAC.
 var metricsRegistered sync.Once
 
-func NewRouter(svc *Services) http.Handler {
+func NewRouter(svc *Services, rbacUsers ...map[string]auth.RBACUser) http.Handler {
 	metricsRegistered.Do(metrics.Register)
 	mux := http.NewServeMux()
 
@@ -84,6 +88,14 @@ func NewRouter(svc *Services) http.Handler {
 		mux.HandleFunc("GET /api/v1/cluster/status", svc.handleClusterStatus)
 		mux.HandleFunc("GET /api/v1/cluster/nodes", svc.handleClusterNodes)
 		mux.HandleFunc("POST /api/v1/cluster/fence/{node}", svc.handleFenceNode)
+
+		// Backup
+		if svc.Backup != nil {
+			mux.HandleFunc("GET /api/v1/backups", svc.handleListBackups)
+			mux.HandleFunc("POST /api/v1/backups", svc.handleCreateBackup)
+			mux.HandleFunc("GET /api/v1/backups/{id}", svc.handleGetBackup)
+			mux.HandleFunc("DELETE /api/v1/backups/{id}", svc.handleDeleteBackup)
+		}
 	}
 
 	// Metrics endpoint (available in both live and stub modes)
@@ -115,12 +127,23 @@ func NewRouter(svc *Services) http.Handler {
 		mux.HandleFunc("GET /api/v1/nodes", handleListNodes)
 	}
 
-	// Middleware chain: RequestID → Logging → Metrics → CORS → Recovery
+	// Middleware chain: RequestID → Audit → Logging → Metrics → RBAC → CORS → Recovery
 	var handler http.Handler = mux
 	handler = recoveryMiddleware(handler)
 	handler = corsMiddleware(handler)
+
+	// RBAC middleware — only if users are configured
+	if len(rbacUsers) > 0 && rbacUsers[0] != nil {
+		handler = auth.RBACMiddleware(rbacUsers[0])(handler)
+	}
+
 	handler = metrics.InstrumentHandler(handler)
 	handler = loggingMiddleware(handler)
+
+	// Audit middleware — always on
+	auditLogger := auth.NewAuditLogger()
+	handler = auth.AuditMiddleware(auditLogger)(handler)
+
 	handler = requestIDMiddleware(handler)
 
 	return handler
@@ -479,6 +502,49 @@ func handleStubList(name string) http.HandlerFunc {
 			{"name": name + "-default", "status": "active"},
 		})
 	}
+}
+
+// ── Backup Handlers ──────────────────────────────────
+
+func (svc *Services) handleListBackups(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, svc.Backup.ListBackups())
+}
+
+func (svc *Services) handleCreateBackup(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		VMID   int32  `json:"vm_id"`
+		VMName string `json:"vm_name"`
+		Pool   string `json:"pool"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	b, err := svc.Backup.CreateBackup(req.VMID, req.VMName, req.Pool)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusCreated, b)
+}
+
+func (svc *Services) handleGetBackup(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	b, err := svc.Backup.GetBackup(id)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, b)
+}
+
+func (svc *Services) handleDeleteBackup(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := svc.Backup.DeleteBackup(id); err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // ── Helpers ──────────────────────────────────────────────

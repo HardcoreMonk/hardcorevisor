@@ -210,7 +210,64 @@ func main() {
 	clusterFenceCmd.Flags().String("action", "reboot", "Fence action (reboot, off, on)")
 	clusterCmd.AddCommand(clusterFenceCmd)
 
-	root.AddCommand(vmCmd, nodeCmd, versionCmd, storageCmd, networkCmd, deviceCmd, clusterCmd)
+	// ── completion subcommand ──
+	completionCmd := &cobra.Command{
+		Use:   "completion [bash|zsh|fish]",
+		Short: "Generate shell completion scripts",
+		Long: `Generate shell completion scripts for hcvctl.
+
+To load bash completions:
+  source <(hcvctl completion bash)
+
+To load zsh completions:
+  source <(hcvctl completion zsh)
+
+To load fish completions:
+  hcvctl completion fish | source`,
+		ValidArgs: []string{"bash", "zsh", "fish"},
+		Args:      cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			switch args[0] {
+			case "bash":
+				return root.GenBashCompletion(os.Stdout)
+			case "zsh":
+				return root.GenZshCompletion(os.Stdout)
+			case "fish":
+				return root.GenFishCompletion(os.Stdout, true)
+			default:
+				return fmt.Errorf("unsupported shell: %s", args[0])
+			}
+		},
+	}
+
+	// ── backup subcommand ──
+	backupCmd := &cobra.Command{Use: "backup", Short: "Manage VM backups"}
+
+	backupCmd.AddCommand(&cobra.Command{
+		Use:   "list",
+		Short: "List all backups",
+		RunE:  backupList,
+	})
+
+	backupCreateCmd := &cobra.Command{
+		Use:   "create",
+		Short: "Create a VM backup",
+		RunE:  backupCreate,
+	}
+	backupCreateCmd.Flags().Int32("vm-id", 0, "VM ID to backup")
+	backupCreateCmd.Flags().String("vm-name", "", "VM name")
+	backupCreateCmd.Flags().String("pool", "", "Storage pool for backup")
+	backupCmd.AddCommand(backupCreateCmd)
+
+	backupDeleteCmd := &cobra.Command{
+		Use:   "delete",
+		Short: "Delete a backup",
+		RunE:  backupDelete,
+	}
+	backupDeleteCmd.Flags().String("id", "", "Backup ID to delete")
+	backupCmd.AddCommand(backupDeleteCmd)
+
+	root.AddCommand(vmCmd, nodeCmd, versionCmd, storageCmd, networkCmd, deviceCmd, clusterCmd, completionCmd, backupCmd)
 
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
@@ -255,6 +312,18 @@ func apiPost(path string, body interface{}) (*http.Response, error) {
 		r = bytes.NewReader(data)
 	}
 	req, err := newRequest("POST", path, r)
+	if err != nil {
+		return nil, fmt.Errorf("API request failed: %w", err)
+	}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("API request failed: %w", err)
+	}
+	return resp, nil
+}
+
+func apiDelete(path string) (*http.Response, error) {
+	req, err := newRequest("DELETE", path, nil)
 	if err != nil {
 		return nil, fmt.Errorf("API request failed: %w", err)
 	}
@@ -730,6 +799,81 @@ func clusterFence(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	fmt.Printf("Node '%s' fenced (action: %s, reason: %s).\n", node, action, reason)
+	return nil
+}
+
+// ── Backup handlers ──────────────────────────────────────
+
+func backupList(cmd *cobra.Command, args []string) error {
+	resp, err := apiGet("/api/v1/backups")
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	var backups []struct {
+		ID          string `json:"id"`
+		VMID        int32  `json:"vm_id"`
+		VMName      string `json:"vm_name"`
+		SnapshotID  string `json:"snapshot_id"`
+		Status      string `json:"status"`
+		CreatedAt   int64  `json:"created_at"`
+		SizeBytes   uint64 `json:"size_bytes"`
+		StoragePool string `json:"storage_pool"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&backups); err != nil {
+		return fmt.Errorf("decode error: %w", err)
+	}
+
+	headers := []string{"ID", "VM_ID", "VM_NAME", "SNAPSHOT", "STATUS", "SIZE", "POOL"}
+	var rows [][]string
+	for _, b := range backups {
+		rows = append(rows, []string{
+			b.ID, fmt.Sprintf("%d", b.VMID), b.VMName, b.SnapshotID,
+			b.Status, formatBytes(b.SizeBytes), b.StoragePool,
+		})
+	}
+	printOutput(backups, headers, rows)
+	return nil
+}
+
+func backupCreate(cmd *cobra.Command, args []string) error {
+	vmID, _ := cmd.Flags().GetInt32("vm-id")
+	vmName, _ := cmd.Flags().GetString("vm-name")
+	pool, _ := cmd.Flags().GetString("pool")
+
+	body := map[string]interface{}{
+		"vm_id":   vmID,
+		"vm_name": vmName,
+		"pool":    pool,
+	}
+	resp, err := apiPost("/api/v1/backups", body)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if err := checkResponse(resp); err != nil {
+		return err
+	}
+	fmt.Printf("Backup created for VM '%s' (ID %d) in pool '%s'.\n", vmName, vmID, pool)
+	return nil
+}
+
+func backupDelete(cmd *cobra.Command, args []string) error {
+	id, _ := cmd.Flags().GetString("id")
+	if id == "" {
+		return fmt.Errorf("--id is required")
+	}
+
+	resp, err := apiDelete(fmt.Sprintf("/api/v1/backups/%s", id))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if err := checkResponse(resp); err != nil {
+		return err
+	}
+	fmt.Printf("Backup '%s' deleted.\n", id)
 	return nil
 }
 
