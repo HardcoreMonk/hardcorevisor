@@ -5,7 +5,7 @@
 #   etcd       - Distributed state store (port 2379)
 #   prometheus - Metrics collection (port 9090)
 #   grafana    - Dashboards (port 3000, admin/admin)
-#   controller - Go Controller (port 8080) [build from source]
+#   controller - Go Controller (REST 8080, gRPC 9091) [build from source]
 
 services:
   etcd:
@@ -66,13 +66,21 @@ services:
     container_name: hcv-controller
     ports:
       - "8080:8080"
+      - "9091:9090"
     environment:
-      - HCV_LISTEN=:8080
+      - HCV_API_ADDR=:8080
+      - HCV_GRPC_ADDR=:9090
       - HCV_ETCD_ENDPOINTS=http://etcd:2379
       - HCV_LOG_LEVEL=info
     depends_on:
       etcd:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
     restart: unless-stopped
 
 volumes:

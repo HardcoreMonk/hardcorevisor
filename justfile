@@ -205,6 +205,16 @@ quick:
 docker-build:
     docker compose -f deploy/docker-compose.yml build
 
+# Run stack smoke test (build + start + test + teardown)
+stack-test:
+    chmod +x scripts/stack-smoke-test.sh
+    ./scripts/stack-smoke-test.sh --build --down
+
+# Run stack smoke test (keep running after test)
+stack-test-keep:
+    chmod +x scripts/stack-smoke-test.sh
+    ./scripts/stack-smoke-test.sh --build
+
 # ═══════════════════════════════════════════════════════════
 # Security
 # ═══════════════════════════════════════════════════════════
