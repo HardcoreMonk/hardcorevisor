@@ -127,14 +127,14 @@ hardcorevisor/
 
 ```bash
 just build            # 전체 빌드 (Rust 워크스페이스 + Go)
-just test             # 전체 테스트 (Rust 81 + Go 19 = 100)
+just test             # 전체 테스트 (Rust 82 + Go 19 = 101)
 just check            # 프리커밋 전체 검증: lint + test
 just lint             # Rust clippy + fmt + Go vet
 just quick            # 빠른 프리커밋 (<30초, 8단계)
 
 # Rust 전용
 just rust-test            # 전체 Rust 테스트 (직렬 실행)
-just rust-test-vmcore     # vmcore 테스트만 (81개)
+just rust-test-vmcore     # vmcore 테스트만 (82개)
 just rust-test-kvm        # 실제 /dev/kvm ioctl 테스트 (2개, KVM 필요)
 just rust-test-mod kvm_mgr  # 특정 모듈 테스트 (kvm_mgr, vcpu_mgr, virtio_blk 등)
 just rust-clippy          # cargo clippy --workspace -- -D warnings
@@ -187,10 +187,10 @@ just check            # lint + test 한 번에 (가장 권장)
 just quick            # 빠른 프리커밋 (<30초, 8단계 — fmt/clippy/test/build/vet/e2e)
 ```
 
-### Rust vmcore 테스트 (81개)
+### Rust vmcore 테스트 (82개)
 
 ```bash
-just rust-test-vmcore                     # vmcore 전체 (81개, 직렬)
+just rust-test-vmcore                     # vmcore 전체 (82개, 직렬)
 just rust-test-kvm                        # 실제 /dev/kvm ioctl (2개, --nocapture)
 just rust-test-mod io_engine             # io_uring 비동기 I/O (6개)
 just rust-test-mod kvm_mgr               # VM 상태 머신 (6개)
@@ -417,11 +417,11 @@ just audit            # cargo audit + govulncheck
 
 | 범위 | 위치 | 실행 방법 | 테스트 수 |
 |------|------|----------|----------|
-| vmcore 유닛 | `vmcore/src/*.rs` | `cargo test -p vmcore -- --test-threads=1` | 81 |
+| vmcore 유닛 | `vmcore/src/*.rs` | `cargo test -p vmcore -- --test-threads=1` | 82 |
 | KVM ioctl | `vmcore/src/kvm_sys.rs` | `cargo test -p vmcore kvm_sys` | 2 (포함) |
 | API 유닛 | `controller/internal/api/router_test.go` | `go test ./internal/api/` | 3 |
 | E2E 통합 | `controller/tests/e2e_vm_lifecycle_test.go` | `go test -race ./tests/` | 16 |
-| **합계** | | `just test` | **100** |
+| **합계** | | `just test` | **101** |
 
 E2E 테스트 스택: `MockVMCore` → `RustVMMBackend` → `BackendSelector` → `ComputeService` + `Storage/Network/Peripheral/HA` → `api.NewRouter(svc)` → `httptest.Server`
 
