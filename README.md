@@ -52,7 +52,7 @@ cd hardcorevisor
 # Build everything
 just build
 
-# Run tests (Rust 70 + Go 11 = 81 tests)
+# Run tests (Rust 70 + Go 15 = 85 tests)
 just test
 
 # Start Go Controller + TUI (2 terminals)
@@ -93,7 +93,7 @@ just audit           # Security audit (cargo-audit + govulncheck)
 just check                    # 전체 lint + test (권장)
 just quick                    # 빠른 프리커밋 (<30초, 8단계)
 
-# Rust (70 tests)
+# Rust (70 tests) + Go (15 tests)
 just rust-test-vmcore         # vmcore 전체
 just rust-test-kvm            # 실제 /dev/kvm ioctl (KVM 필요)
 just rust-test-mod kvm_mgr    # 특정 모듈
