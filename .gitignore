@@ -41,6 +41,7 @@ tarpaulin-report.html
 
 # ═══ Documentation ═══
 docs/book-output/
+!COVERAGE.md
 
 # ═══ Generated ═══
 controller/pkg/proto/*pb/*.go

@@ -76,6 +76,17 @@ just release-build
 #   target/hcvctl               (CLI)
 ```
 
+## Helm 차트 배포
+
+```bash
+# Helm으로 Kubernetes 배포
+helm install hcv deploy/helm/
+
+# 설정 파일 준비
+cp hcv.example.yaml hcv.yaml
+# hcv.yaml을 환경에 맞게 편집한 뒤 시작
+```
+
 ## Docker 배포
 
 ### 개발 스택

@@ -3,6 +3,7 @@ module github.com/HardcoreMonk/hardcorevisor/controller
 go 1.23.0
 
 require (
+	github.com/gorilla/websocket v1.5.3
 	github.com/prometheus/client_golang v1.20.5
 	github.com/spf13/cobra v1.10.2
 	go.etcd.io/etcd/client/v3 v3.5.17

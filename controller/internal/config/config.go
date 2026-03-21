@@ -31,7 +31,8 @@ type PeripheralConfig struct {
 
 // APIConfig holds REST API settings.
 type APIConfig struct {
-	Addr string `yaml:"addr"` // default ":8080"
+	Addr      string `yaml:"addr"`       // default ":8080"
+	RateLimit int    `yaml:"rate_limit"` // requests per second, 0 = no limit
 }
 
 // GRPCConfig holds gRPC server settings.

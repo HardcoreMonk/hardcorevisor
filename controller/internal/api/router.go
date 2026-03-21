@@ -7,6 +7,7 @@ import (
 	"log"
 	"log/slog"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,6 +24,7 @@ import (
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/network"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/peripheral"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/storage"
+	"github.com/HardcoreMonk/hardcorevisor/controller/internal/template"
 	"github.com/HardcoreMonk/hardcorevisor/controller/pkg/ffi"
 )
 
@@ -42,7 +44,9 @@ type Services struct {
 	Peripheral *peripheral.Service
 	HA         *ha.Service
 	Backup     *backup.Service
+	Template   *template.Service
 	Version    VersionInfo
+	EventHub   *EventHub
 }
 
 // NewRouter creates the HTTP router with middleware.
@@ -99,6 +103,15 @@ func NewRouter(svc *Services, rbacUsers ...map[string]auth.RBACUser) http.Handle
 			mux.HandleFunc("DELETE /api/v1/backups/{id}", svc.handleDeleteBackup)
 		}
 
+		// Template
+		if svc.Template != nil {
+			mux.HandleFunc("GET /api/v1/templates", svc.handleListTemplates)
+			mux.HandleFunc("POST /api/v1/templates", svc.handleCreateTemplate)
+			mux.HandleFunc("GET /api/v1/templates/{id}", svc.handleGetTemplate)
+			mux.HandleFunc("DELETE /api/v1/templates/{id}", svc.handleDeleteTemplate)
+			mux.HandleFunc("POST /api/v1/templates/{id}/deploy", svc.handleDeployTemplate)
+		}
+
 		// Webhook
 		mux.HandleFunc("POST /api/v1/webhooks/alert", handleAlertWebhook)
 
@@ -107,6 +120,11 @@ func NewRouter(svc *Services, rbacUsers ...map[string]auth.RBACUser) http.Handle
 
 		// API Info
 		mux.HandleFunc("GET /api/v1/api-info", handleAPIInfo)
+
+		// WebSocket
+		if svc.EventHub != nil {
+			mux.HandleFunc("GET /ws", svc.EventHub.HandleWS)
+		}
 	}
 
 	// Metrics endpoint (available in both live and stub modes)
@@ -144,9 +162,18 @@ func NewRouter(svc *Services, rbacUsers ...map[string]auth.RBACUser) http.Handle
 		mux.HandleFunc("GET /api/v1/api-info", handleAPIInfo)
 	}
 
-	// Middleware chain: RequestID → Audit → Logging → Metrics → RBAC → CORS → Recovery
+	// Middleware chain: RequestID → Audit → Logging → Metrics → RBAC → CORS → RateLimit → Recovery
 	var handler http.Handler = mux
 	handler = recoveryMiddleware(handler)
+
+	// Rate limiting — read HCV_RATE_LIMIT env var (requests per second, 0 = no limit)
+	if rlStr := os.Getenv("HCV_RATE_LIMIT"); rlStr != "" {
+		if rate, err := strconv.Atoi(rlStr); err == nil && rate > 0 {
+			limiter := NewRateLimiter(float64(rate), rate)
+			handler = RateLimitMiddleware(limiter)(handler)
+		}
+	}
+
 	handler = corsMiddleware(handler)
 
 	// RBAC middleware — only if users are configured
@@ -598,6 +625,82 @@ func (svc *Services) handleDeleteBackup(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// ── Template Handlers ────────────────────────────────
+
+func (svc *Services) handleListTemplates(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, svc.Template.List())
+}
+
+func (svc *Services) handleCreateTemplate(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name        string `json:"name"`
+		Description string `json:"description"`
+		VCPUs       uint32 `json:"vcpus"`
+		MemoryMB    uint64 `json:"memory_mb"`
+		DiskSizeGB  uint64 `json:"disk_size_gb"`
+		Backend     string `json:"backend"`
+		OSType      string `json:"os_type"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", err.Error())
+		return
+	}
+	if req.Name == "" {
+		writeError(w, http.StatusBadRequest, ErrCodeBadRequest, "name is required")
+		return
+	}
+	t, err := svc.Template.Create(req.Name, req.Description, req.VCPUs, req.MemoryMB, req.DiskSizeGB, req.Backend, req.OSType)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, ErrCodeBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, t)
+}
+
+func (svc *Services) handleGetTemplate(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	t, err := svc.Template.Get(id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, ErrCodeNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, t)
+}
+
+func (svc *Services) handleDeleteTemplate(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := svc.Template.Delete(id); err != nil {
+		writeError(w, http.StatusNotFound, ErrCodeNotFound, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (svc *Services) handleDeployTemplate(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	t, err := svc.Template.Get(id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, ErrCodeNotFound, err.Error())
+		return
+	}
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", err.Error())
+		return
+	}
+	if req.Name == "" {
+		req.Name = t.Name + "-vm"
+	}
+	vm, err := svc.Compute.CreateVM(req.Name, t.VCPUs, t.MemoryMB, t.Backend)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, ErrCodeInternal, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, vm)
 }
 
 // ── Webhook Handlers ─────────────────────────────────

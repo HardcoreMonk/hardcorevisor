@@ -34,6 +34,16 @@ log:
   format: "text"         # HCV_LOG_FORMAT (text, json)
 ```
 
+```yaml
+# 스토리지 드라이버
+storage:
+  driver: "memory"       # HCV_STORAGE_DRIVER (memory, zfs)
+
+# 디바이스 패스스루 드라이버
+peripheral:
+  driver: "memory"       # HCV_PERIPHERAL_DRIVER (memory, sysfs)
+```
+
 전체 예제는 프로젝트 루트의 `hcv.example.yaml`을 참고한다.
 
 ## 환경변수
@@ -48,6 +58,11 @@ log:
 | `HCV_RBAC_USERS` | (없음) | RBAC 사용자 정의 (`user:pass:role,...`) |
 | `HCV_LOG_LEVEL` | `info` | 로그 레벨 (debug, info, warn, error) |
 | `HCV_LOG_FORMAT` | `text` | 로그 포맷 (text, json) |
+| `HCV_STORAGE_DRIVER` | `memory` | 스토리지 드라이버 (`memory`, `zfs`) |
+| `HCV_PERIPHERAL_DRIVER` | `memory` | 디바이스 드라이버 (`memory`, `sysfs`) |
+| `HCV_HA_DRIVER` | `memory` | HA 드라이버 (`memory`, `etcd`) |
+| `HCV_NODE_NAME` | (호스트명) | 클러스터 내 노드 이름 |
+| `HCV_RATE_LIMIT` | (없음) | API 요청 레이트 리밋 (향후 지원, 예: `100/s`) |
 
 ## 로그 레벨 / 포맷
 

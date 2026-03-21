@@ -89,6 +89,14 @@ deploy/alert-rules.yml            # Prometheus 알람 규칙
 
 Prometheus 알람이 트리거되면 Alertmanager를 통해 알림을 전달할 수 있다. `deploy/alert-rules.yml`에 정의된 규칙이 Prometheus에서 평가되며, 조건이 충족되면 알람이 발생한다.
 
+### Alertmanager 연동
+
+Prometheus의 `alertmanagers` 설정에 Alertmanager 주소를 추가하면 알람 발생 시 Slack, PagerDuty, 웹훅 등으로 알림을 전달할 수 있다. Controller는 `/api/v1/webhooks/alert` 엔드포인트로 Alertmanager 웹훅을 수신할 수 있다.
+
+### 대시보드 자동 프로비저닝
+
+`just dev-up`으로 Docker 스택을 시작하면 Grafana 대시보드가 자동으로 프로비저닝된다. 대시보드 JSON은 `deploy/grafana/dashboards/hardcorevisor.json`에 정의되어 있으며, Phase 5-9에서 Backup Count, API Error Rate, Node Heartbeat, Request Duration P99 패널이 추가되었다.
+
 ### 알람 확인
 
 ```bash

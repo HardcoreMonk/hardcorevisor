@@ -70,6 +70,20 @@
 | GET | `/api/v1/backups/{id}` | 백업 상세 조회 |
 | DELETE | `/api/v1/backups/{id}` | 백업 삭제 |
 
+### System / Info - 3개
+
+| 메서드 | 경로 | 용도 |
+|--------|------|------|
+| GET | `/api/v1/system/stats` | 시스템 전체 통계 (VM/스토리지/노드/업타임) |
+| GET | `/api/v1/api-info` | API 버전 정보 (current, supported, deprecated) |
+| POST | `/api/v1/webhooks/alert` | Alertmanager 웹훅 수신 |
+
+### Migration - 1개
+
+| 메서드 | 경로 | 용도 |
+|--------|------|------|
+| POST | `/api/v1/vms/{id}/migrate` | VM 라이브 마이그레이션 (`{target_node}`) |
+
 ### Monitoring - 1개
 
 | 메서드 | 경로 | 용도 |

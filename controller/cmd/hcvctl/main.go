@@ -297,7 +297,47 @@ To load fish completions:
 		RunE:  runShell,
 	}
 
-	root.AddCommand(vmCmd, nodeCmd, versionCmd, storageCmd, networkCmd, deviceCmd, clusterCmd, completionCmd, backupCmd, statusCmd, shellCmd)
+	// ── template subcommand ──
+	templateCmd := &cobra.Command{Use: "template", Short: "Manage VM templates"}
+
+	templateCmd.AddCommand(&cobra.Command{
+		Use:   "list",
+		Short: "List all templates",
+		RunE:  templateList,
+	})
+
+	templateCreateCmd := &cobra.Command{
+		Use:   "create",
+		Short: "Create a new template",
+		RunE:  templateCreate,
+	}
+	templateCreateCmd.Flags().String("name", "", "Template name")
+	templateCreateCmd.Flags().String("description", "", "Template description")
+	templateCreateCmd.Flags().Uint32("vcpus", 2, "Number of vCPUs")
+	templateCreateCmd.Flags().Uint64("memory", 4096, "Memory in MB")
+	templateCreateCmd.Flags().Uint64("disk", 50, "Disk size in GB")
+	templateCreateCmd.Flags().String("backend", "rustvmm", "VMM backend: qemu or rustvmm")
+	templateCreateCmd.Flags().String("os", "linux", "OS type: linux or windows")
+	templateCmd.AddCommand(templateCreateCmd)
+
+	templateDeleteCmd := &cobra.Command{
+		Use:   "delete",
+		Short: "Delete a template",
+		RunE:  templateDelete,
+	}
+	templateDeleteCmd.Flags().String("id", "", "Template ID to delete")
+	templateCmd.AddCommand(templateDeleteCmd)
+
+	templateDeployCmd := &cobra.Command{
+		Use:   "deploy",
+		Short: "Deploy a VM from a template",
+		RunE:  templateDeploy,
+	}
+	templateDeployCmd.Flags().String("id", "", "Template ID to deploy")
+	templateDeployCmd.Flags().String("name", "", "Name for the new VM")
+	templateCmd.AddCommand(templateDeployCmd)
+
+	root.AddCommand(vmCmd, nodeCmd, versionCmd, storageCmd, networkCmd, deviceCmd, clusterCmd, completionCmd, backupCmd, statusCmd, shellCmd, templateCmd)
 
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
@@ -1303,6 +1343,121 @@ func handleShellStatus() error {
 
 		tw.Flush()
 	}
+	return nil
+}
+
+// ── Template handlers ────────────────────────────────────
+
+func templateList(cmd *cobra.Command, args []string) error {
+	resp, err := apiGet("/api/v1/templates")
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if err := checkResponse(resp); err != nil {
+		return err
+	}
+
+	var templates []struct {
+		ID          string `json:"id"`
+		Name        string `json:"name"`
+		Description string `json:"description"`
+		VCPUs       uint32 `json:"vcpus"`
+		MemoryMB    uint64 `json:"memory_mb"`
+		DiskSizeGB  uint64 `json:"disk_size_gb"`
+		Backend     string `json:"backend"`
+		OSType      string `json:"os_type"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&templates); err != nil {
+		return fmt.Errorf("decode error: %w", err)
+	}
+
+	headers := []string{"ID", "NAME", "VCPUS", "MEMORY", "DISK", "BACKEND", "OS", "DESCRIPTION"}
+	var rows [][]string
+	for _, t := range templates {
+		rows = append(rows, []string{
+			t.ID, t.Name,
+			fmt.Sprintf("%d", t.VCPUs),
+			fmt.Sprintf("%dMB", t.MemoryMB),
+			fmt.Sprintf("%dGB", t.DiskSizeGB),
+			t.Backend, t.OSType, t.Description,
+		})
+	}
+	printOutput(templates, headers, rows)
+	return nil
+}
+
+func templateCreate(cmd *cobra.Command, args []string) error {
+	name, _ := cmd.Flags().GetString("name")
+	description, _ := cmd.Flags().GetString("description")
+	vcpus, _ := cmd.Flags().GetUint32("vcpus")
+	memory, _ := cmd.Flags().GetUint64("memory")
+	disk, _ := cmd.Flags().GetUint64("disk")
+	backend, _ := cmd.Flags().GetString("backend")
+	osType, _ := cmd.Flags().GetString("os")
+
+	if name == "" {
+		return fmt.Errorf("--name is required")
+	}
+
+	body := map[string]interface{}{
+		"name":         name,
+		"description":  description,
+		"vcpus":        vcpus,
+		"memory_mb":    memory,
+		"disk_size_gb": disk,
+		"backend":      backend,
+		"os_type":      osType,
+	}
+	resp, err := apiPost("/api/v1/templates", body)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if err := checkResponse(resp); err != nil {
+		return err
+	}
+	fmt.Printf("Template '%s' created.\n", name)
+	return nil
+}
+
+func templateDelete(cmd *cobra.Command, args []string) error {
+	id, _ := cmd.Flags().GetString("id")
+	if id == "" {
+		return fmt.Errorf("--id is required")
+	}
+
+	resp, err := apiDelete(fmt.Sprintf("/api/v1/templates/%s", id))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if err := checkResponse(resp); err != nil {
+		return err
+	}
+	fmt.Printf("Template '%s' deleted.\n", id)
+	return nil
+}
+
+func templateDeploy(cmd *cobra.Command, args []string) error {
+	id, _ := cmd.Flags().GetString("id")
+	name, _ := cmd.Flags().GetString("name")
+	if id == "" {
+		return fmt.Errorf("--id is required")
+	}
+
+	body := map[string]interface{}{
+		"name": name,
+	}
+	resp, err := apiPost(fmt.Sprintf("/api/v1/templates/%s/deploy", id), body)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if err := checkResponse(resp); err != nil {
+		return err
+	}
+	fmt.Printf("VM deployed from template '%s'.\n", id)
 	return nil
 }
 

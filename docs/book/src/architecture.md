@@ -140,3 +140,19 @@ Created → Configured → Running ⇄ Paused
 ```
 
 잘못된 상태 전이 시도 시 REST API는 409 Conflict를 반환한다.
+
+## 플러그어블 드라이버 패턴
+
+Storage, Network, Peripheral, HA 4개 서비스 모두 `Driver` 인터페이스를 정의하고, 인메모리(dev/test)와 실제 백엔드(ZFS, nftables, sysfs, etcd)를 환경변수로 전환한다. 새 드라이버는 인터페이스만 구현하면 무중단으로 교체할 수 있다.
+
+## VFIO 패스스루 워크플로
+
+`internal/peripheral/driver_sysfs.go`가 `/sys/bus/pci/devices/`를 스캔하여 IOMMU 그룹별로 디바이스를 분류한다. Attach 시 vfio-pci 드라이버를 바인딩하고 VM에 할당, Detach 시 원래 드라이버로 복원한다.
+
+## KVM Dirty Log (마이그레이션)
+
+`memory_mgr.rs`의 `dirty log` 기능을 통해 게스트 메모리 변경 페이지를 추적한다. 라이브 마이그레이션 시 변경된 페이지만 대상 노드로 전송하여 다운타임을 최소화한다.
+
+## io_uring 파이프라인
+
+`virtio_blk_io.rs`가 virtio-blk 요청을 `io_engine.rs`의 io_uring SQ에 제출하고, CQ에서 완료를 수집하여 게스트에 응답한다. zero-copy 경로로 커널 컨텍스트 스위칭을 최소화한다.

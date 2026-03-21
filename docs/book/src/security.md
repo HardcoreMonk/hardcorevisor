@@ -145,6 +145,22 @@ hcvctl --user admin --password secret123 vm list
 4. RBAC 비밀번호는 충분한 복잡성 확보
 5. 감사 로그를 중앙 로그 수집기로 전송하여 보관
 
+## 구조화 에러 응답 (APIError)
+
+모든 API 에러는 `APIError` 구조체로 통일된 JSON 응답을 반환한다:
+
+```json
+{"error": "not_found", "message": "VM with id 99 not found", "request_id": "abc-123"}
+```
+
+## Rate Limiting (향후)
+
+`HCV_RATE_LIMIT` 환경변수로 API 요청 레이트 리밋을 설정할 수 있다 (향후 지원). IP 기반 또는 사용자 기반 제한을 지원할 예정이다.
+
+## VFIO 보안 고려사항
+
+VFIO 디바이스 패스스루 시 IOMMU가 활성화되어 있어야 DMA 공격을 방지할 수 있다. `/sys/bus/pci/devices/` 스캔은 root 권한이 필요하며, 디바이스 바인딩/언바인딩 작업은 감사 로그에 기록된다.
+
 ## 미들웨어 체인
 
 API 요청은 다음 미들웨어 체인을 통과한다:

@@ -91,6 +91,27 @@ hcvctl backup create --vm-id 1 \
 hcvctl backup delete --id backup-1         # 백업 삭제
 ```
 
+### vm migrate (VM 마이그레이션)
+
+```bash
+hcvctl vm migrate --id 1 --target node-02   # VM을 대상 노드로 라이브 마이그레이션
+```
+
+### shell (인터랙티브 REPL)
+
+```bash
+hcvctl shell                              # 인터랙티브 REPL 모드 진입
+# hcv> vm list
+# hcv> cluster status
+```
+
+### status (시스템 통계)
+
+```bash
+hcvctl status                             # 시스템 전체 통계 (VM/스토리지/노드/업타임)
+hcvctl status -o json                     # JSON 출력
+```
+
 ### completion (쉘 자동 완성)
 
 ```bash

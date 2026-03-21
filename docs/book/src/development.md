@@ -231,6 +231,26 @@ hardcorevisor/
 └── hcv.example.yaml # 설정 예제
 ```
 
+## 드라이버 패턴 구현 방법
+
+새 드라이버를 추가하려면 해당 서비스의 `Driver` 인터페이스를 구현한다. 예: `internal/storage/driver_ceph.go`에 `CephDriver` 구조체를 생성하고 `StorageDriver` 인터페이스의 모든 메서드를 구현한 뒤, `config.go`에서 환경변수로 선택 가능하도록 등록한다.
+
+## Helm 차트
+
+```bash
+# Helm으로 배포
+helm install hcv deploy/helm/
+helm upgrade hcv deploy/helm/ --set controller.replicas=3
+```
+
+## 부하 테스트 / 벤치마크
+
+```bash
+just load-test    # API 부하 테스트 (healthz, VM CRUD, 동시 생성)
+just bench        # Rust criterion 벤치마크 (event_ring, VM, io_uring, virtqueue)
+just go-bench     # Go API 벤치마크 (healthz, create VM, list VMs)
+```
+
 ## 코드 커버리지
 
 ```bash

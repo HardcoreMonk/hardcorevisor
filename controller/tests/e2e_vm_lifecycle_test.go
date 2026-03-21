@@ -20,6 +20,7 @@ import (
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/network"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/peripheral"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/storage"
+	"github.com/HardcoreMonk/hardcorevisor/controller/internal/template"
 	"github.com/HardcoreMonk/hardcorevisor/controller/pkg/ffi"
 )
 
@@ -47,6 +48,7 @@ func setupE2E(t *testing.T) (*httptest.Server, func()) {
 		Peripheral: peripheral.NewService(),
 		HA:         ha.NewService(),
 		Backup:     backup.NewService(storageSvc),
+		Template:   template.NewService(),
 		Version: api.VersionInfo{
 			Version:   "test-e2e",
 			GitCommit: "abc123",
@@ -641,6 +643,74 @@ func TestE2E_APIInfo(t *testing.T) {
 	var info map[string]any
 	decodeJSON(t, resp, &info)
 	assertEqual(t, info["current_version"].(string), "v1")
+}
+
+// ── E2E: Template Lifecycle ───────────────────────────────
+
+func TestE2E_TemplateLifecycle(t *testing.T) {
+	srv, cleanup := setupE2E(t)
+	defer cleanup()
+	base := srv.URL
+
+	// 1. List default templates (should have 3)
+	resp := httpGet(t, base+"/api/v1/templates")
+	assertStatus(t, resp, 200)
+	var templates []map[string]any
+	decodeJSON(t, resp, &templates)
+	if len(templates) < 3 {
+		t.Fatalf("expected at least 3 default templates, got %d", len(templates))
+	}
+
+	// 2. Get a specific template
+	resp = httpGet(t, base+"/api/v1/templates/tpl-1")
+	assertStatus(t, resp, 200)
+	var tpl map[string]any
+	decodeJSON(t, resp, &tpl)
+	assertEqual(t, tpl["name"].(string), "linux-small")
+	assertEqual(t, tpl["backend"].(string), "rustvmm")
+
+	// 3. Create a new template
+	body, _ := json.Marshal(map[string]any{
+		"name": "custom-large", "description": "Custom large VM",
+		"vcpus": 8, "memory_mb": 16384, "disk_size_gb": 200,
+		"backend": "qemu", "os_type": "linux",
+	})
+	resp = httpPostRaw(t, base+"/api/v1/templates", body)
+	assertStatus(t, resp, 201)
+	var newTpl map[string]any
+	decodeJSON(t, resp, &newTpl)
+	assertEqual(t, newTpl["name"].(string), "custom-large")
+	newTplID := newTpl["id"].(string)
+
+	// 4. Deploy a VM from template
+	body, _ = json.Marshal(map[string]any{"name": "deployed-from-tpl"})
+	resp = httpPostRaw(t, base+"/api/v1/templates/tpl-1/deploy", body)
+	assertStatus(t, resp, 201)
+	var vm map[string]any
+	decodeJSON(t, resp, &vm)
+	assertEqual(t, vm["name"].(string), "deployed-from-tpl")
+	assertEqual(t, vm["backend"].(string), "rustvmm")
+	vmID := fmt.Sprintf("%.0f", vm["id"].(float64))
+
+	// 5. Delete the custom template
+	resp = httpDelete(t, base+"/api/v1/templates/"+newTplID)
+	assertStatus(t, resp, 204)
+
+	// 6. Verify deleted (404)
+	resp = httpGet(t, base+"/api/v1/templates/"+newTplID)
+	assertStatus(t, resp, 404)
+
+	// 7. Verify non-existent template (404)
+	resp = httpGet(t, base+"/api/v1/templates/tpl-999")
+	assertStatus(t, resp, 404)
+
+	// 8. Deploy from non-existent template (404)
+	body, _ = json.Marshal(map[string]any{"name": "should-fail"})
+	resp = httpPostRaw(t, base+"/api/v1/templates/tpl-999/deploy", body)
+	assertStatus(t, resp, 404)
+
+	// Cleanup deployed VM
+	httpDelete(t, base+"/api/v1/vms/"+vmID)
 }
 
 // ═══ HTTP Helpers ════════════════════════════════════════

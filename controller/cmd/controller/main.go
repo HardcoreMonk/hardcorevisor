@@ -102,6 +102,7 @@ func main() {
 	backupSvc := backup.NewService(storageSvc)
 
 	// ── REST API ──
+	eventHub := api.NewEventHub()
 	restServices := &api.Services{
 		Compute:    computeProvider,
 		Storage:    storageSvc,
@@ -109,6 +110,7 @@ func main() {
 		Peripheral: peripheralSvc,
 		HA:         haSvc,
 		Backup:     backupSvc,
+		EventHub:   eventHub,
 		Version: api.VersionInfo{
 			Version:   version,
 			GitCommit: "dev",

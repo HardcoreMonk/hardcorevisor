@@ -20,7 +20,8 @@ const (
 	ErrCodeConflict     = "CONFLICT"
 	ErrCodeInternal     = "INTERNAL_ERROR"
 	ErrCodeUnauthorized = "UNAUTHORIZED"
-	ErrCodeForbidden    = "FORBIDDEN"
+	ErrCodeForbidden       = "FORBIDDEN"
+	ErrCodeTooManyRequests = "TOO_MANY_REQUESTS"
 )
 
 func writeError(w http.ResponseWriter, status int, code, message string, details ...string) {
