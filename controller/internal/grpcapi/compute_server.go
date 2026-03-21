@@ -15,11 +15,11 @@ import (
 // ComputeServer implements the ComputeService gRPC service.
 type ComputeServer struct {
 	pb.UnimplementedComputeServiceServer
-	svc *compute.ComputeService
+	svc compute.ComputeProvider
 }
 
 // NewComputeServer creates a gRPC compute server backed by the compute service.
-func NewComputeServer(svc *compute.ComputeService) *ComputeServer {
+func NewComputeServer(svc compute.ComputeProvider) *ComputeServer {
 	return &ComputeServer{svc: svc}
 }
 

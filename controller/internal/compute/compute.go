@@ -244,6 +244,17 @@ type BackendInfo struct {
 	Status string `json:"status"`
 }
 
+// ComputeProvider is the interface satisfied by both ComputeService
+// and PersistentComputeService, used by the API and gRPC layers.
+type ComputeProvider interface {
+	CreateVM(name string, vcpus uint32, memoryMB uint64, backendHint string) (*VMInfo, error)
+	GetVM(handle int32) (*VMInfo, error)
+	ListVMs() []*VMInfo
+	ActionVM(handle int32, action string) (*VMInfo, error)
+	DestroyVM(handle int32) error
+	ListBackends() []BackendInfo
+}
+
 // ── Compute Service ─────────────────────────────────────────
 
 // ComputeService orchestrates VM operations across backends.

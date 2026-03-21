@@ -2,10 +2,10 @@
 
 use crate::app::App;
 use ratatui::{
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, Paragraph, Row, Table},
+    widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table},
     Frame,
 };
 
@@ -120,6 +120,8 @@ pub fn render(frame: &mut Frame, app: &App) {
         Span::raw(" pause  "),
         Span::styled("d", Style::default().fg(Color::Red)),
         Span::raw(" delete  "),
+        Span::styled("c", Style::default().fg(Color::Cyan)),
+        Span::raw(" create  "),
         Span::styled("r", Style::default().fg(Color::Cyan)),
         Span::raw(" refresh  "),
         Span::styled("1-6", Style::default().fg(Color::White)),
@@ -133,4 +135,94 @@ pub fn render(frame: &mut Frame, app: &App) {
             .border_style(Style::default().fg(Color::DarkGray)),
     );
     frame.render_widget(help, chunks[2]);
+
+    // ── Create VM Form Popup ──
+    if app.show_create_form {
+        render_create_form(frame, app, area);
+    }
+}
+
+/// Render a centered popup for the VM creation form
+fn render_create_form(frame: &mut Frame, app: &App, area: Rect) {
+    let popup_width = 50u16.min(area.width.saturating_sub(4));
+    let popup_height = 14u16.min(area.height.saturating_sub(4));
+    let x = (area.width.saturating_sub(popup_width)) / 2;
+    let y = (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+    // Clear background
+    frame.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .title(" Create VM ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+
+    let form = &app.create_form;
+    let fields = [
+        ("Name", &form.name),
+        ("vCPUs", &form.vcpus),
+        ("Memory (MB)", &form.memory_mb),
+        ("Backend", &form.backend),
+    ];
+
+    let field_constraints: Vec<Constraint> = fields
+        .iter()
+        .map(|_| Constraint::Length(2))
+        .chain(std::iter::once(Constraint::Length(1))) // spacer
+        .chain(std::iter::once(Constraint::Length(1))) // error line
+        .chain(std::iter::once(Constraint::Min(0))) // footer
+        .collect();
+
+    let field_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(field_constraints)
+        .split(inner);
+
+    for (i, (label, value)) in fields.iter().enumerate() {
+        let is_focused = i == form.focused_field;
+        let label_style = if is_focused {
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        let cursor = if is_focused { "_" } else { "" };
+        let indicator = if is_focused { "> " } else { "  " };
+
+        let line = Line::from(vec![
+            Span::styled(indicator, label_style),
+            Span::styled(format!("{label}: "), label_style),
+            Span::styled(
+                format!("{value}{cursor}"),
+                Style::default().fg(Color::Yellow),
+            ),
+        ]);
+        frame.render_widget(Paragraph::new(line), field_chunks[i]);
+    }
+
+    // Error line
+    if let Some(ref err) = form.error {
+        let err_line = Paragraph::new(Line::from(Span::styled(
+            format!("  {err}"),
+            Style::default().fg(Color::Red),
+        )));
+        frame.render_widget(err_line, field_chunks[fields.len() + 1]);
+    }
+
+    // Footer
+    let footer_idx = field_chunks.len() - 1;
+    let footer = Paragraph::new(Line::from(vec![
+        Span::styled(" Tab", Style::default().fg(Color::Green)),
+        Span::raw(": next  "),
+        Span::styled("Enter", Style::default().fg(Color::Green)),
+        Span::raw(": create  "),
+        Span::styled("Esc", Style::default().fg(Color::Red)),
+        Span::raw(": cancel"),
+    ]));
+    frame.render_widget(footer, field_chunks[footer_idx]);
 }

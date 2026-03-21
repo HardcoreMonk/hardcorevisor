@@ -3,6 +3,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,14 +13,28 @@ import (
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
 var (
-	version   = "dev"
-	commit    = "none"
-	buildDate = "unknown"
-	apiAddr   = "http://localhost:8080"
+	version       = "dev"
+	commit        = "none"
+	buildDate     = "unknown"
+	apiAddr       = "http://localhost:8080"
+	outputFormat  = "table"
+	tlsSkip       bool
+	authUser      string
+	authPass      string
+	httpClient    *http.Client
 )
+
+func initHTTPClient() {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if tlsSkip {
+		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec
+	}
+	httpClient = &http.Client{Transport: transport}
+}
 
 func main() {
 	root := &cobra.Command{
@@ -29,6 +44,12 @@ func main() {
 	}
 
 	root.PersistentFlags().StringVar(&apiAddr, "api", apiAddr, "Controller API address")
+	root.PersistentFlags().StringVarP(&outputFormat, "output", "o", "table", "Output format: table, json, yaml")
+	root.PersistentFlags().BoolVar(&tlsSkip, "tls-skip-verify", false, "Skip TLS certificate verification")
+	root.PersistentFlags().StringVar(&authUser, "user", "", "Basic auth username")
+	root.PersistentFlags().StringVar(&authPass, "password", "", "Basic auth password")
+
+	cobra.OnInitialize(initHTTPClient)
 
 	// ── vm subcommand ──
 	vmCmd := &cobra.Command{Use: "vm", Short: "Manage virtual machines"}
@@ -198,8 +219,26 @@ func main() {
 
 // ── API helpers ──────────────────────────────────────────
 
+func newRequest(method, path string, body io.Reader) (*http.Request, error) {
+	req, err := http.NewRequest(method, apiAddr+path, body)
+	if err != nil {
+		return nil, err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if authUser != "" {
+		req.SetBasicAuth(authUser, authPass)
+	}
+	return req, nil
+}
+
 func apiGet(path string) (*http.Response, error) {
-	resp, err := http.Get(apiAddr + path)
+	req, err := newRequest("GET", path, nil)
+	if err != nil {
+		return nil, fmt.Errorf("API request failed: %w", err)
+	}
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("API request failed: %w", err)
 	}
@@ -215,7 +254,11 @@ func apiPost(path string, body interface{}) (*http.Response, error) {
 		}
 		r = bytes.NewReader(data)
 	}
-	resp, err := http.Post(apiAddr+path, "application/json", r)
+	req, err := newRequest("POST", path, r)
+	if err != nil {
+		return nil, fmt.Errorf("API request failed: %w", err)
+	}
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("API request failed: %w", err)
 	}
@@ -228,6 +271,26 @@ func checkResponse(resp *http.Response) error {
 		return fmt.Errorf("API error (%d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 	return nil
+}
+
+// printOutput handles --output flag for list commands.
+// data is the raw API response for json/yaml, headers+rows for table.
+func printOutput(data any, headers []string, rows [][]string) {
+	switch outputFormat {
+	case "json":
+		out, _ := json.MarshalIndent(data, "", "  ")
+		fmt.Println(string(out))
+	case "yaml":
+		out, _ := yaml.Marshal(data)
+		fmt.Print(string(out))
+	default: // table
+		tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(tw, strings.Join(headers, "\t"))
+		for _, row := range rows {
+			fmt.Fprintln(tw, strings.Join(row, "\t"))
+		}
+		tw.Flush()
+	}
 }
 
 // ── VM handlers ──────────────────────────────────────────
@@ -251,13 +314,15 @@ func vmList(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("decode error: %w", err)
 	}
 
-	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "ID\tNAME\tSTATE\tVCPUS\tMEMORY\tNODE")
+	headers := []string{"ID", "NAME", "STATE", "VCPUS", "MEMORY", "NODE"}
+	var rows [][]string
 	for _, vm := range vms {
-		fmt.Fprintf(tw, "%d\t%s\t%s\t%d\t%dMB\t%s\n",
-			vm.ID, vm.Name, vm.State, vm.VCPUs, vm.MemoryMB, vm.Node)
+		rows = append(rows, []string{
+			fmt.Sprintf("%d", vm.ID), vm.Name, vm.State,
+			fmt.Sprintf("%d", vm.VCPUs), fmt.Sprintf("%dMB", vm.MemoryMB), vm.Node,
+		})
 	}
-	tw.Flush()
+	printOutput(vms, headers, rows)
 	return nil
 }
 

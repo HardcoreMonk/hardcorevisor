@@ -10,7 +10,7 @@ import (
 // ServiceRefs holds references to services for metric collection.
 // Avoids importing the api package to prevent import cycles.
 type ServiceRefs struct {
-	Compute *compute.ComputeService
+	Compute compute.ComputeProvider
 	Storage *storage.Service
 	HA      *ha.Service
 }

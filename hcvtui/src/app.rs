@@ -1,7 +1,7 @@
 //! App state and main event loop (Immediate Mode rendering)
 
 use color_eyre::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::{DefaultTerminal, Frame};
 use std::time::{Duration, Instant};
 
@@ -29,6 +29,29 @@ pub enum ConnStatus {
     Disconnected,
     Connected,
     Error,
+}
+
+/// State for the VM creation form
+pub struct CreateFormState {
+    pub name: String,
+    pub vcpus: String,
+    pub memory_mb: String,
+    pub backend: String,
+    pub focused_field: usize,
+    pub error: Option<String>,
+}
+
+impl CreateFormState {
+    pub fn new() -> Self {
+        Self {
+            name: String::new(),
+            vcpus: "2".to_string(),
+            memory_mb: "4096".to_string(),
+            backend: "rustvmm".to_string(),
+            focused_field: 0,
+            error: None,
+        }
+    }
 }
 
 /// Main application state
@@ -65,6 +88,10 @@ pub struct App {
     // VM Manager selection
     pub vm_selected: usize,
 
+    // VM creation form
+    pub show_create_form: bool,
+    pub create_form: CreateFormState,
+
     // Log viewer scroll offset
     #[allow(dead_code)]
     pub log_scroll: u16,
@@ -98,6 +125,8 @@ impl App {
             cluster_nodes: Vec::new(),
             log_entries: vec!["[INFO] HardCoreVisor TUI started".to_string()],
             vm_selected: 0,
+            show_create_form: false,
+            create_form: CreateFormState::new(),
             log_scroll: 0,
             last_poll: Instant::now() - Duration::from_secs(10), // force immediate first poll
             poll_interval: Duration::from_secs(2),
@@ -114,7 +143,7 @@ impl App {
             if event::poll(self.tick_rate)? {
                 if let Event::Key(key) = event::read()? {
                     if key.kind == KeyEventKind::Press {
-                        self.handle_key(key.code).await;
+                        self.handle_key(key).await;
                     }
                 }
             }
@@ -262,8 +291,14 @@ impl App {
     }
 
     /// Handle key press events
-    async fn handle_key(&mut self, key: KeyCode) {
-        let action = Action::from_key(key, self.screen);
+    async fn handle_key(&mut self, key_event: KeyEvent) {
+        // When create form is open, capture all input for the form
+        if self.show_create_form {
+            self.handle_form_key(key_event).await;
+            return;
+        }
+
+        let action = Action::from_key(key_event.code, self.screen);
         match action {
             Action::Quit => self.running = false,
             Action::SwitchScreen(s) => self.screen = s,
@@ -301,10 +336,92 @@ impl App {
                     self.tick().await;
                 }
             }
+            Action::CreateForm => {
+                self.show_create_form = true;
+                self.create_form = CreateFormState::new();
+            }
             Action::Refresh => {
                 self.tick().await;
             }
             Action::None | Action::Select | Action::Back | Action::Search | Action::Command => {}
+        }
+    }
+
+    /// Handle key input when the VM creation form is active
+    async fn handle_form_key(&mut self, key_event: KeyEvent) {
+        match key_event.code {
+            KeyCode::Esc => {
+                self.show_create_form = false;
+            }
+            KeyCode::Tab | KeyCode::Down => {
+                self.create_form.focused_field = (self.create_form.focused_field + 1) % 4;
+            }
+            KeyCode::BackTab | KeyCode::Up => {
+                self.create_form.focused_field = (self.create_form.focused_field + 3) % 4;
+            }
+            KeyCode::Enter => {
+                self.submit_create_form().await;
+            }
+            KeyCode::Backspace => {
+                let field = self.current_form_field_mut();
+                field.pop();
+            }
+            KeyCode::Char(c) => {
+                // Ignore ctrl/alt modified chars in form
+                if key_event
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                {
+                    return;
+                }
+                let field = self.current_form_field_mut();
+                field.push(c);
+            }
+            _ => {}
+        }
+    }
+
+    /// Get a mutable reference to the currently focused form field
+    fn current_form_field_mut(&mut self) -> &mut String {
+        match self.create_form.focused_field {
+            0 => &mut self.create_form.name,
+            1 => &mut self.create_form.vcpus,
+            2 => &mut self.create_form.memory_mb,
+            3 => &mut self.create_form.backend,
+            _ => &mut self.create_form.name,
+        }
+    }
+
+    /// Submit the create form: validate and call API
+    async fn submit_create_form(&mut self) {
+        let name = self.create_form.name.trim().to_string();
+        if name.is_empty() {
+            self.create_form.error = Some("Name cannot be empty".to_string());
+            return;
+        }
+        let vcpus: u32 = match self.create_form.vcpus.trim().parse() {
+            Ok(v) if v > 0 => v,
+            _ => {
+                self.create_form.error = Some("vCPUs must be a positive number".to_string());
+                return;
+            }
+        };
+        let memory_mb: u64 = match self.create_form.memory_mb.trim().parse() {
+            Ok(v) if v > 0 => v,
+            _ => {
+                self.create_form.error = Some("Memory must be a positive number".to_string());
+                return;
+            }
+        };
+
+        match self.client.create_vm(&name, vcpus, memory_mb).await {
+            Ok(_) => {
+                self.tick().await;
+                self.show_create_form = false;
+            }
+            Err(e) => {
+                self.create_form.error = Some(format!("Create failed: {e}"));
+            }
         }
     }
 

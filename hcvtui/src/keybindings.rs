@@ -19,6 +19,7 @@ pub enum Action {
     VmStop,
     VmPause,
     VmDelete,
+    CreateForm,
     None,
 }
 
@@ -49,6 +50,7 @@ impl Action {
             KeyCode::Char('x') if screen == Screen::VmManager => Action::VmStop,
             KeyCode::Char('p') if screen == Screen::VmManager => Action::VmPause,
             KeyCode::Char('d') if screen == Screen::VmManager => Action::VmDelete,
+            KeyCode::Char('c') if screen == Screen::VmManager => Action::CreateForm,
 
             _ => Action::None,
         }

@@ -1,0 +1,34 @@
+groups:
+  - name: hardcorevisor
+    rules:
+      - alert: NodeDown
+        expr: hcv_nodes_total == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "No cluster nodes online"
+
+      - alert: StorageHigh
+        expr: (hcv_storage_pool_bytes{type="used"} / hcv_storage_pool_bytes{type="total"}) > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Storage pool {{ $labels.pool }} usage above 80%"
+
+      - alert: APIErrorRate
+        expr: rate(hcv_api_requests_total{status=~"5.."}[5m]) > 0.1
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "API error rate elevated"
+
+      - alert: NoVMsRunning
+        expr: hcv_vms_total{state="running"} == 0
+        for: 5m
+        labels:
+          severity: info
+        annotations:
+          summary: "No VMs currently running"

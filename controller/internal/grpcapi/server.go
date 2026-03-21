@@ -16,7 +16,7 @@ import (
 
 // Services holds the internal services for gRPC registration.
 type Services struct {
-	Compute    *compute.ComputeService
+	Compute    compute.ComputeProvider
 	Storage    *storage.Service
 	Peripheral *peripheral.Service
 }

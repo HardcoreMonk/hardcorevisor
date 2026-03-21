@@ -21,6 +21,7 @@ import (
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/network"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/peripheral"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/storage"
+	"github.com/HardcoreMonk/hardcorevisor/controller/internal/store"
 	"github.com/HardcoreMonk/hardcorevisor/controller/pkg/ffi"
 )
 
@@ -53,6 +54,21 @@ func main() {
 	selector.Register(qemuBackend)
 	computeSvc := compute.NewComputeService(selector, rustVMM)
 
+	// ── State Store (etcd or in-memory) ──
+	etcdEndpoints := os.Getenv("HCV_ETCD_ENDPOINTS")
+	kvStore := store.NewStore(etcdEndpoints)
+	defer kvStore.Close()
+
+	// Wrap compute service with persistence if using a real store
+	var computeProvider compute.ComputeProvider = computeSvc
+	if _, isMemory := kvStore.(*store.MemoryStore); !isMemory {
+		persistent := compute.NewPersistentComputeService(computeSvc, kvStore)
+		if err := persistent.LoadFromStore(); err != nil {
+			log.Printf("WARNING: failed to load VMs from store: %v", err)
+		}
+		computeProvider = persistent
+	}
+
 	storageSvc := storage.NewService()
 	networkSvc := network.NewService()
 	peripheralSvc := peripheral.NewService()
@@ -60,7 +76,7 @@ func main() {
 
 	// ── REST API ──
 	restServices := &api.Services{
-		Compute:    computeSvc,
+		Compute:    computeProvider,
 		Storage:    storageSvc,
 		Network:    networkSvc,
 		Peripheral: peripheralSvc,
@@ -84,7 +100,7 @@ func main() {
 
 	// ── gRPC ──
 	grpcSvc := &grpcapi.Services{
-		Compute:    computeSvc,
+		Compute:    computeProvider,
 		Storage:    storageSvc,
 		Peripheral: peripheralSvc,
 	}

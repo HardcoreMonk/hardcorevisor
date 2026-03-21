@@ -33,7 +33,7 @@ type VersionInfo struct {
 
 // Services aggregates all backend services for the API layer.
 type Services struct {
-	Compute    *compute.ComputeService
+	Compute    compute.ComputeProvider
 	Storage    *storage.Service
 	Network    *network.Service
 	Peripheral *peripheral.Service
