@@ -1,7 +1,34 @@
-// Package main — HardCoreVisor Controller (Go)
+// Package main — HardCoreVisor Controller (Go 오케스트레이션 레이어)
 //
-// Orchestration layer managing VM lifecycle, storage, networking,
-// and HA via REST API and gRPC services.
+// VM 생명주기, 스토리지, 네트워크, HA를 REST API(:8080)와 gRPC(:9090)로
+// 동시에 서비스하는 메인 프로세스이다.
+//
+// # 아키텍처 위치
+//
+//	┌──────────────────────────────────────┐
+//	│  hcvtui (Rust TUI)   hcvctl (CLI)   │  ← 클라이언트
+//	│        │ REST              │ REST    │
+//	│        ▼                   ▼         │
+//	│  ┌─── Controller (이 바이너리) ───┐  │
+//	│  │ REST API (:8080) + gRPC (:9090)│  │
+//	│  │ Services: Compute, Storage,    │  │
+//	│  │   Network, Peripheral, HA      │  │
+//	│  └───────────────────────────────-┘  │
+//	│        │ FFI / QMP                   │
+//	│        ▼                             │
+//	│  vmcore (Rust) / QEMU                │  ← VMM 백엔드
+//	└──────────────────────────────────────┘
+//
+// # 초기화 순서
+//
+//  1. 설정 파일 로드 (hcv.yaml + 환경변수 오버라이드)
+//  2. 구조화 로깅 초기화 (slog)
+//  3. 서비스 초기화 (Compute, Storage, Network, Peripheral, HA, Backup)
+//  4. 상태 저장소 연결 (etcd 또는 인메모리 폴백)
+//  5. REST 라우터 + 미들웨어 체인 구성
+//  6. gRPC 서버 구성
+//  7. 동시 서빙 시작 (goroutine)
+//  8. SIGINT/SIGTERM 대기 → 그레이스풀 셧다운
 package main
 
 import (
@@ -32,7 +59,7 @@ import (
 const version = "0.1.0"
 
 func main() {
-	// ── Load configuration (hcv.yaml + env var overlay) ──
+	// ── 설정 파일 로드 (hcv.yaml + 환경변수 오버라이드) ──
 	cfg, err := config.Load("hcv.yaml")
 	if err != nil {
 		// Fall back to defaults if config load fails for non-file-not-found errors.
@@ -40,28 +67,31 @@ func main() {
 		cfg = config.DefaultConfig()
 	}
 
-	// ── Structured logging ──
+	// ── 구조화 로깅 초기화 (slog 기반, text/json 형식) ──
 	logging.Setup(cfg.Log.Level, cfg.Log.Format)
 
 	nodeName := ha.GetNodeName()
 	slog.Info("HardCoreVisor Controller starting", "version", version, "node", nodeName)
 
-	// ── Initialize services ──
+	// ── 서비스 초기화 ──
+	// MockVMCore: 실제 libvmcore.a 없이 순수 Go로 VM 상태를 관리하는 테스트 백엔드
 	core := ffi.NewMockVMCore()
 	core.Init()
 
+	// Dual VMM 백엔드 구성: RustVMM(경량 microVM) + QEMU(범용 VM)
 	rustVMM := compute.NewRustVMMBackend(core)
 	qemuBackend := compute.NewQEMUBackend(&compute.QEMUConfig{Emulated: true})
+	// BackendSelector: 워크로드 특성에 따라 적합한 VMM을 자동 선택
 	selector := compute.NewBackendSelector(compute.PolicyAuto)
 	selector.Register(rustVMM)
 	selector.Register(qemuBackend)
 	computeSvc := compute.NewComputeService(selector, rustVMM)
 
-	// ── State Store (etcd or in-memory) ──
+	// ── 상태 저장소 (etcd 또는 인메모리 폴백) ──
 	kvStore := store.NewStore(cfg.Etcd.Endpoints)
 	defer kvStore.Close()
 
-	// Wrap compute service with persistence if using a real store
+	// 실제 저장소(etcd) 사용 시 PersistentComputeService로 래핑하여 VM 상태 영속화
 	var computeProvider compute.ComputeProvider = computeSvc
 	if _, isMemory := kvStore.(*store.MemoryStore); !isMemory {
 		persistent := compute.NewPersistentComputeService(computeSvc, kvStore)
@@ -106,7 +136,7 @@ func main() {
 	}
 	backupSvc := backup.NewService(storageSvc)
 
-	// ── REST API ──
+	// ── REST API 라우터 구성 ──
 	eventHub := api.NewEventHub()
 	restServices := &api.Services{
 		Compute:    computeProvider,
@@ -124,8 +154,9 @@ func main() {
 			VMCore:    core.Version(),
 		},
 	}
-	// Load RBAC users from config (config already merged env vars)
+	// RBAC 사용자 로드 (설정 파일 + HCV_RBAC_USERS 환경변수 병합 완료 상태)
 	rbacUsers := auth.ParseUsers(cfg.Auth.Users)
+	// 미들웨어 체인: RequestID → Audit → Logging → Metrics → RBAC → CORS → RateLimit → Recovery
 	router := api.NewRouter(restServices, rbacUsers)
 
 	httpSrv := &http.Server{
@@ -144,7 +175,7 @@ func main() {
 	}
 	grpcSrv := grpcapi.NewServer(grpcSvc)
 
-	// ── Start servers ──
+	// ── 서버 시작 (REST + gRPC 동시 서빙) ──
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 

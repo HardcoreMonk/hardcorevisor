@@ -1,3 +1,20 @@
+// sysfs PCI 디바이스 탐색 드라이버 — /sys/bus/pci/devices 기반
+//
+// 시스템의 실제 PCI 디바이스를 sysfs에서 스캔하여 IOMMU 그룹이 있는
+// (패스스루 가능한) 디바이스를 자동 탐색한다.
+//
+// 스캔 대상 PCI 클래스:
+//   - 03: 디스플레이 컨트롤러 (GPU) → DeviceGPU
+//   - 02: 네트워크 컨트롤러 (NIC) → DeviceNIC
+//   - 01: 대용량 스토리지 컨트롤러 (Disk) → DeviceDisk
+//
+// VFIO 바인딩 프로세스 (AttachDevice):
+//  1. driver_override에 "vfio-pci" 기록
+//  2. 현재 드라이버에서 unbind
+//  3. drivers_probe로 vfio-pci 바인딩 트리거
+//
+// 폴백: /sys/bus/pci가 없으면 MemoryDriver의 Mock 데이터 사용
+// 주의: VFIO 바인딩에는 root 권한이 필요할 수 있다.
 package peripheral
 
 import (
@@ -8,15 +25,18 @@ import (
 	"strings"
 )
 
-// SysfsDriver discovers PCI devices via /sys/bus/pci/devices.
-// It embeds MemoryDriver for attach/detach state management.
+// SysfsDriver 는 /sys/bus/pci/devices에서 PCI 디바이스를 탐색하는 드라이버이다.
+// MemoryDriver를 임베딩하여 Attach/Detach 상태 관리를 위임받는다.
+// sysfs를 사용할 수 없는 환경에서는 MemoryDriver의 Mock 데이터로 폴백한다.
 type SysfsDriver struct {
 	*MemoryDriver
 }
 
-// NewSysfsDriver creates a SysfsDriver.
-// On creation it scans sysfs for IOMMU-capable PCI devices and populates
-// the embedded MemoryDriver with discovered devices.
+// NewSysfsDriver 는 SysfsDriver를 생성하고, 즉시 sysfs PCI 스캔을 수행한다.
+// IOMMU 그룹이 있는 PCI 디바이스를 탐색하여 내부 맵에 저장한다.
+// sysfs 접근 불가 시 디바이스 맵은 비어 있으며, ListDevices 호출 시 Mock 데이터로 폴백한다.
+//
+// 호출 시점: 설정에서 드라이버가 "sysfs"일 때 Controller 초기화 시
 func NewSysfsDriver() *SysfsDriver {
 	d := &SysfsDriver{
 		MemoryDriver: &MemoryDriver{
@@ -27,10 +47,12 @@ func NewSysfsDriver() *SysfsDriver {
 	return d
 }
 
+// Name 은 드라이버 이름 "sysfs"를 반환한다.
 func (d *SysfsDriver) Name() string { return "sysfs" }
 
-// ListDevices returns PCI devices discovered from sysfs.
-// Falls back to memory driver mock data if /sys/bus/pci is not available.
+// ListDevices 는 sysfs에서 탐색된 PCI 디바이스를 반환한다.
+// 탐색된 디바이스가 없으면 MemoryDriver의 Mock 데이터로 폴백한다.
+// typeFilter가 빈 문자열이면 전체 반환.
 func (d *SysfsDriver) ListDevices(typeFilter DeviceType) ([]*Device, error) {
 	d.mu.RLock()
 	if len(d.devices) == 0 {
@@ -43,7 +65,7 @@ func (d *SysfsDriver) ListDevices(typeFilter DeviceType) ([]*Device, error) {
 	return d.MemoryDriver.ListDevices(typeFilter)
 }
 
-// GetDevice returns a device by ID.
+// GetDevice 는 ID로 디바이스를 조회한다. 탐색된 디바이스가 없으면 Mock 데이터로 폴백.
 func (d *SysfsDriver) GetDevice(id string) (*Device, error) {
 	d.mu.RLock()
 	if len(d.devices) == 0 {
@@ -57,7 +79,9 @@ func (d *SysfsDriver) GetDevice(id string) (*Device, error) {
 
 const sysbusPCIDevices = "/sys/bus/pci/devices"
 
-// scan discovers PCI devices from sysfs.
+// scan 은 /sys/bus/pci/devices 디렉터리를 읽어 PCI 디바이스를 탐색한다.
+// IOMMU 그룹이 있는 디바이스만 대상이며, PCI 클래스 코드로 종류를 분류한다.
+// sysfs 접근 불가 시 디바이스 맵은 비어 있는 채로 유지된다 (폴백으로 Mock 사용).
 func (d *SysfsDriver) scan() {
 	entries, err := os.ReadDir(sysbusPCIDevices)
 	if err != nil {
@@ -126,8 +150,10 @@ func (d *SysfsDriver) scan() {
 	}
 }
 
-// classifyPCIDevice determines device type from PCI class code.
-// Class code format from sysfs: "0x030000" (display controller), "0x020000" (network), etc.
+// classifyPCIDevice 는 PCI 클래스 코드로 디바이스 종류를 판별한다.
+// sysfs 클래스 코드 형식: "0x030000" (디스플레이), "0x020000" (네트워크) 등.
+// 상위 2자리 hex로 분류: 03=GPU, 02=NIC, 01=Disk
+// 해당하지 않는 클래스는 빈 문자열을 반환한다 (무시됨).
 func classifyPCIDevice(classStr, vendor, deviceID string) (DeviceType, string) {
 	classStr = strings.TrimSpace(classStr)
 	if len(classStr) < 4 {
@@ -155,7 +181,15 @@ func classifyPCIDevice(classStr, vendor, deviceID string) (DeviceType, string) {
 	}
 }
 
-// BindVFIO binds a PCI device to the vfio-pci driver for passthrough.
+// BindVFIO 는 PCI 디바이스를 vfio-pci 드라이버에 바인딩하여 패스스루를 준비한다.
+//
+// 처리 순서:
+//  1. driver_override에 "vfio-pci" 기록
+//  2. 현재 드라이버에서 unbind (이미 언바운드면 무시)
+//  3. drivers_probe로 vfio-pci 바인딩 트리거
+//
+// 부작용: sysfs 파일 쓰기 (시스템 드라이버 변경)
+// 주의: root 권한 필요
 func (d *SysfsDriver) BindVFIO(pciAddr string) error {
 	// 1. Write "vfio-pci" to /sys/bus/pci/devices/{addr}/driver_override
 	overridePath := fmt.Sprintf("/sys/bus/pci/devices/%s/driver_override", pciAddr)
@@ -180,7 +214,14 @@ func (d *SysfsDriver) BindVFIO(pciAddr string) error {
 	return nil
 }
 
-// UnbindVFIO restores the device to its original driver.
+// UnbindVFIO 는 디바이스를 vfio-pci에서 해제하고 원래 드라이버로 복원한다.
+//
+// 처리 순서:
+//  1. driver_override 초기화 (빈 문자열 기록)
+//  2. vfio-pci에서 unbind
+//  3. drivers_probe로 원래 드라이버 바인딩 트리거
+//
+// 부작용: sysfs 파일 쓰기 (시스템 드라이버 변경)
 func (d *SysfsDriver) UnbindVFIO(pciAddr string) error {
 	overridePath := fmt.Sprintf("/sys/bus/pci/devices/%s/driver_override", pciAddr)
 	// Clear override by writing empty string
@@ -197,7 +238,10 @@ func (d *SysfsDriver) UnbindVFIO(pciAddr string) error {
 	return os.WriteFile(probePath, []byte(pciAddr), 0644)
 }
 
-// AttachDevice overrides MemoryDriver.AttachDevice to perform VFIO binding.
+// AttachDevice 는 MemoryDriver.AttachDevice를 오버라이드하여 VFIO 바인딩도 수행한다.
+// PCI 디바이스인 경우 (USB 제외) VFIO 바인딩을 시도하되,
+// 실패해도 에러를 반환하지 않는다 (best-effort, root 권한 없이 테스트 가능).
+// 부작용: 성공 시 디바이스 드라이버가 vfio-pci로 변경됨
 func (d *SysfsDriver) AttachDevice(deviceID string, vmHandle int32) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -222,7 +266,8 @@ func (d *SysfsDriver) AttachDevice(deviceID string, vmHandle int32) error {
 	return nil
 }
 
-// readSysfsFile reads a single-line sysfs attribute file.
+// readSysfsFile 은 sysfs 속성 파일에서 한 줄을 읽어 반환한다.
+// 파일 읽기 실패 시 빈 문자열을 반환한다.
 func readSysfsFile(path string) string {
 	data, err := os.ReadFile(path)
 	if err != nil {

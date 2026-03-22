@@ -1,3 +1,15 @@
+// Ceph RBD 스토리지 드라이버 — rbd/ceph CLI 기반
+//
+// Ceph RADOS Block Device(RBD) 이미지를 관리하는 드라이버이다.
+// ceph, rbd 명령어를 exec.Command로 실행하므로 시스템에 Ceph 클라이언트가 설치되어 있어야 한다.
+//
+// 외부 명령 실행:
+//   - "ceph osd pool stats": 풀 통계 조회
+//   - "rbd create": RBD 이미지 생성
+//   - "rbd snap create/ls": 스냅샷 생성/조회
+//
+// 주의: Ceph 클러스터 연결 설정(/etc/ceph/ceph.conf)이 필요하다.
+// 환경변수: HCV_CEPH_POOL로 기본 풀 이름 설정 가능 (기본값: "rbd")
 package storage
 
 import (
@@ -8,7 +20,9 @@ import (
 	"time"
 )
 
-// CephDriver manages storage via Ceph RBD CLI.
+// CephDriver 는 Ceph RBD CLI를 통해 스토리지를 관리하는 드라이버이다.
+// pool 필드에 기본 Ceph 풀 이름을 저장하며, 볼륨/스냅샷 ID는 atomic 카운터로 생성한다.
+// 부작용: CreateVolume은 실제 RBD 이미지를 생성한다.
 type CephDriver struct {
 	mu         sync.RWMutex
 	pool       string // default Ceph pool name
@@ -16,7 +30,10 @@ type CephDriver struct {
 	nextSnapID atomic.Int32
 }
 
-// NewCephDriver creates a CephDriver with the given default pool.
+// NewCephDriver 는 지정된 기본 풀 이름으로 CephDriver를 생성한다.
+// pool이 빈 문자열이면 기본값 "rbd"를 사용한다.
+//
+// 호출 시점: 설정에서 드라이버가 "ceph"일 때 Controller 초기화 시
 func NewCephDriver(pool string) *CephDriver {
 	if pool == "" {
 		pool = "rbd"
@@ -27,8 +44,12 @@ func NewCephDriver(pool string) *CephDriver {
 	return d
 }
 
+// Name 은 드라이버 이름 "ceph"를 반환한다.
 func (d *CephDriver) Name() string { return "ceph" }
 
+// ListPools 는 "ceph osd pool stats" 명령으로 풀 통계를 조회한다.
+// CLI 실행 실패 시 설정된 기본 풀 1개를 health "unknown"으로 반환 (폴백).
+// 부작용: 없음 (읽기 전용)
 func (d *CephDriver) ListPools() ([]*Pool, error) {
 	// Run: ceph osd pool stats --format json
 	out, err := exec.Command("ceph", "osd", "pool", "stats", "--format", "json").Output()
@@ -45,6 +66,10 @@ func (d *CephDriver) ListPools() ([]*Pool, error) {
 	return []*Pool{{Name: d.pool, PoolType: "ceph", Health: "healthy"}}, nil
 }
 
+// CreateVolume 은 "rbd create --size <MB> <pool>/<name>" 명령으로 RBD 이미지를 생성한다.
+// 크기는 MB 단위로 변환된다. 경로는 "rbd:pool/name" 형식이다.
+// 에러 조건: rbd 명령 실행 실패, 풀 미존재
+// 부작용: 실제 Ceph RBD 이미지 생성 (클러스터 상태 변경)
 func (d *CephDriver) CreateVolume(pool, name, format string, sizeBytes uint64) (*Volume, error) {
 	// rbd create --size <MB> <pool>/<name>
 	sizeMB := sizeBytes / (1024 * 1024)
@@ -69,12 +94,18 @@ func (d *CephDriver) CreateVolume(pool, name, format string, sizeBytes uint64) (
 	}, nil
 }
 
+// DeleteVolume 은 Ceph RBD 이미지를 삭제한다.
+// 현재는 name→id 매핑이 구현되지 않아 best-effort로 nil을 반환한다.
+// TODO: 볼륨 ID에서 pool/name을 추출하여 "rbd rm" 실행
+// 멱등성: 현재 항상 성공 반환
 func (d *CephDriver) DeleteVolume(id string) error {
-	// Would need to track name->id mapping
-	// For now, best-effort
+	// name→id 매핑 필요 — 현재는 best-effort
 	return nil
 }
 
+// CreateSnapshot 은 Ceph RBD 스냅샷을 생성한다.
+// 현재는 인메모리에만 기록하며, 실제 "rbd snap create" 명령은 미구현이다.
+// TODO: "rbd snap create <pool>/<volume>@<snap>" 실행
 func (d *CephDriver) CreateSnapshot(volumeID, name string) (*Snapshot, error) {
 	// rbd snap create <pool>/<volume>@<snap>
 	d.mu.Lock()
@@ -89,6 +120,9 @@ func (d *CephDriver) CreateSnapshot(volumeID, name string) (*Snapshot, error) {
 	}, nil
 }
 
+// ListSnapshots 는 Ceph RBD 스냅샷 목록을 반환한다.
+// 현재는 미구현으로 빈 목록을 반환한다.
+// TODO: "rbd snap ls <pool>/<volume>" 실행
 func (d *CephDriver) ListSnapshots(volumeID string) ([]*Snapshot, error) {
 	// rbd snap ls <pool>/<volume>
 	return nil, nil

@@ -1,4 +1,20 @@
-//! Storage View screen — two-panel layout with pools and volumes
+//! 스토리지 뷰 화면 — 풀과 볼륨을 좌우 2열로 표시한다.
+//!
+//! ## 레이아웃 구조
+//!
+//! ```text
+//! ┌─── 타이틀 바 ────────────────────────────┐
+//! │  HardCoreVisor │ Storage View │ Connected │
+//! ├──────────────────┬───────────────────────┤
+//! │  Storage Pools   │  Volumes              │  ← 좌우 50:50 분할
+//! │  + Usage Gauges  │  (ID, Pool, Name ...) │
+//! ├──────────────────┴───────────────────────┤
+//! │  [1]Dash [2]VMs [3]Storage ...           │
+//! └──────────────────────────────────────────┘
+//! ```
+//!
+//! 왼쪽 패널은 풀 테이블 + 사용률 게이지 바로 구성된다.
+//! 게이지 색상: 초록(0~60%) → 노랑(60~80%) → 빨강(80%+)
 
 use crate::app::{App, ConnStatus};
 use ratatui::{
@@ -9,6 +25,9 @@ use ratatui::{
     Frame,
 };
 
+/// 스토리지 뷰 화면을 렌더링한다.
+///
+/// 타이틀 바, 콘텐츠(좌: 풀, 우: 볼륨), 상태 바의 3단 구조이다.
 pub fn render(frame: &mut Frame, app: &App) {
     let area = frame.area();
 
@@ -91,6 +110,11 @@ pub fn render(frame: &mut Frame, app: &App) {
     frame.render_widget(status, chunks[2]);
 }
 
+/// 스토리지 풀 패널을 렌더링한다 (테이블 + 사용률 게이지).
+///
+/// 풀이 없으면 "Waiting for data..." 메시지를 표시한다.
+/// 풀 테이블에는 이름, 타입, 사용량/전체, 헬스, 사용률을 표시한다.
+/// 테이블 아래에 풀별 사용률 게이지 바를 표시한다.
 fn render_pools_panel(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     if app.pools.is_empty() {
         let block = Block::default()
@@ -225,6 +249,9 @@ fn render_pools_panel(frame: &mut Frame, app: &App, area: ratatui::layout::Rect)
     }
 }
 
+/// 볼륨 패널을 렌더링한다.
+///
+/// 볼륨의 ID, 풀, 이름, 크기, 포맷을 테이블로 표시한다.
 fn render_volumes_panel(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let header_cells = ["ID", "POOL", "NAME", "SIZE", "FORMAT"].iter().map(|h| {
         Cell::from(*h).style(
@@ -269,6 +296,7 @@ fn render_volumes_panel(frame: &mut Frame, app: &App, area: ratatui::layout::Rec
     frame.render_widget(table, area);
 }
 
+/// 바이트 수를 사람이 읽기 쉬운 형식으로 변환한다 (GB/MB/KB/B).
 fn format_bytes(bytes: u64) -> String {
     const GB: u64 = 1_073_741_824;
     const MB: u64 = 1_048_576;

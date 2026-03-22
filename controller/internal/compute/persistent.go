@@ -1,7 +1,19 @@
-// Package compute — PersistentComputeService wraps ComputeService with etcd-backed persistence.
+// Package compute — PersistentComputeService: etcd 기반 VM 상태 영속화 래퍼.
 //
-// On every VM mutation (create, destroy, action), the updated state is
-// written to the store so VMs survive controller restarts.
+// # 패키지 목적
+//
+// ComputeService를 Decorator 패턴으로 래핑하여, 모든 VM 변경 작업
+// (생성, 삭제, 생명주기 액션, 마이그레이션)을 etcd Store에 자동으로 저장한다.
+// Controller 재시작 시 LoadFromStore()로 저장된 VM을 복원한다.
+//
+// # 저장소 키 형식
+//
+//	"vms/{handle}" → VMInfo JSON
+//
+// # 에러 처리
+//
+// Store 저장 실패는 로그로 기록하지만 VM 작업 자체는 성공으로 처리한다.
+// (저장소 장애가 VM 운영을 중단시키면 안 되므로)
 package compute
 
 import (
@@ -14,13 +26,18 @@ import (
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/store"
 )
 
-// PersistentComputeService wraps a ComputeService and persists VM state to a Store.
+// PersistentComputeService — ComputeService를 래핑하여 VM 상태를 Store에 영속화한다.
+// ComputeProvider 인터페이스를 구현하므로 API 레이어에서 투명하게 교체 가능하다.
 type PersistentComputeService struct {
 	inner *ComputeService
 	store store.Store
 }
 
-// NewPersistentComputeService creates a persistent wrapper around the given ComputeService.
+// NewPersistentComputeService — ComputeService에 영속화 래퍼를 생성한다.
+//
+// # 매개변수
+//   - inner: 래핑할 ComputeService
+//   - s: VM 상태를 저장할 Store (EtcdStore 또는 MemoryStore)
 func NewPersistentComputeService(inner *ComputeService, s store.Store) *PersistentComputeService {
 	return &PersistentComputeService{
 		inner: inner,
@@ -105,8 +122,12 @@ func (p *PersistentComputeService) MigrateVM(handle int32, targetNode string) er
 	return nil
 }
 
-// LoadFromStore reads all persisted VMs from the store and recreates them
-// in-memory via the inner ComputeService. Called once at startup.
+// LoadFromStore — 저장소에서 영속화된 모든 VM을 읽어 인메모리로 복원한다.
+// Controller 시작 시 1회 호출된다. 개별 VM 복원 실패는 로그로 기록하고 건너뛴다.
+//
+// # 반환값
+//   - nil: 성공 (일부 VM 복원 실패 포함)
+//   - error: 저장소 목록 조회 자체가 실패한 경우
 func (p *PersistentComputeService) LoadFromStore() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

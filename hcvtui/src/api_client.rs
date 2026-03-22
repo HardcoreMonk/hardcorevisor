@@ -1,11 +1,35 @@
-//! REST API client for communicating with Go Controller
+//! Go Controller REST API 클라이언트
+//!
+//! reqwest HTTP 클라이언트를 사용하여 Controller의 REST API와 통신한다.
+//! 모든 API 호출은 비동기(async)이며, 3초 타임아웃이 적용된다.
+//!
+//! ## 아키텍처 위치
+//!
+//! ```text
+//! hcvtui (TUI)
+//!     └── ApiClient (이 모듈)
+//!             │ HTTP GET/POST/DELETE
+//!             ▼
+//!         Go Controller (:8080)
+//!             └── /api/v1/vms, /api/v1/nodes, ...
+//! ```
+//!
+//! ## 사용 패턴
+//!
+//! `app.rs`의 `tick()`이 2초마다 `list_vms()`, `list_nodes()` 등을
+//! `tokio::join!`으로 병렬 호출하여 최신 데이터를 가져온다.
+//! VM 제어 액션(`vm_action`, `create_vm`, `delete_vm`)은
+//! 사용자 입력 시 즉시 호출된다.
 
 use serde::{Deserialize, Serialize};
 
-/// Base URL for the Go Controller REST API
+/// Go Controller REST API 기본 주소
 const DEFAULT_BASE_URL: &str = "http://localhost:8080/api/v1";
 
-/// Storage pool info
+/// 스토리지 풀 정보
+///
+/// Controller의 `GET /api/v1/storage/pools` 응답에 매핑된다.
+/// `#[serde(default)]`로 필드가 누락되어도 역직렬화가 실패하지 않는다.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PoolInfo {
     #[serde(default)]
@@ -20,7 +44,9 @@ pub struct PoolInfo {
     pub health: String,
 }
 
-/// Storage volume info
+/// 스토리지 볼륨 정보
+///
+/// Controller의 `GET /api/v1/storage/volumes` 응답에 매핑된다.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct VolumeInfo {
     #[serde(default)]
@@ -37,7 +63,10 @@ pub struct VolumeInfo {
     pub path: String,
 }
 
-/// SDN zone info
+/// SDN 존 정보 (Software Defined Networking)
+///
+/// Controller의 `GET /api/v1/network/zones` 응답에 매핑된다.
+/// 존 타입: VXLAN, VLAN, Simple 등
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ZoneInfo {
     #[serde(default)]
@@ -52,7 +81,10 @@ pub struct ZoneInfo {
     pub status: String,
 }
 
-/// Virtual network info
+/// 가상 네트워크 정보
+///
+/// Controller의 `GET /api/v1/network/vnets` 응답에 매핑된다.
+/// VLAN 태그와 서브넷 정보를 포함한다.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct VNetInfo {
     #[serde(default)]
@@ -69,7 +101,10 @@ pub struct VNetInfo {
     pub status: String,
 }
 
-/// Cluster status info
+/// 클러스터 전체 상태 정보
+///
+/// Controller의 `GET /api/v1/cluster/status` 응답에 매핑된다.
+/// 쿼럼 유지 여부, 리더 노드, 전체 헬스 상태를 포함한다.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ClusterStatusInfo {
     #[serde(default)]
@@ -84,7 +119,10 @@ pub struct ClusterStatusInfo {
     pub status: String,
 }
 
-/// Cluster node info (HA)
+/// HA 클러스터 노드 정보
+///
+/// Controller의 `GET /api/v1/cluster/nodes` 응답에 매핑된다.
+/// 리더 여부, 펜스 에이전트, 관리 중인 VM 수를 포함한다.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ClusterNodeInfo {
     #[serde(default)]
@@ -101,13 +139,21 @@ pub struct ClusterNodeInfo {
     pub fence_agent: String,
 }
 
-/// API client configuration
+/// REST API 클라이언트
+///
+/// reqwest 기반 HTTP 클라이언트로, 3초 타임아웃이 설정되어 있다.
+/// Controller가 응답하지 않으면 타임아웃 에러가 `ApiError::Network`로 반환된다.
 pub struct ApiClient {
+    /// API 기본 URL (예: "http://localhost:8080/api/v1")
     base_url: String,
+    /// reqwest HTTP 클라이언트 (커넥션 풀 자동 관리)
     client: reqwest::Client,
 }
 
-/// VM info returned from the API
+/// VM 정보 — Controller API에서 반환되는 VM 상태
+///
+/// Controller의 `GET /api/v1/vms` 응답의 각 항목에 매핑된다.
+/// `state` 필드: "configured", "running", "paused", "stopped"
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct VmInfo {
     pub id: i32,
@@ -123,7 +169,10 @@ pub struct VmInfo {
     pub backend: String,
 }
 
-/// Cluster node info
+/// 클러스터 노드 리소스 정보 (Dashboard용)
+///
+/// Controller의 `GET /api/v1/nodes` 응답에 매핑된다.
+/// CPU/메모리 사용률과 관리 중인 VM 수를 포함한다.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct NodeInfo {
     pub name: String,
@@ -133,7 +182,10 @@ pub struct NodeInfo {
     pub vm_count: u32,
 }
 
-/// Version info
+/// Controller 버전 정보
+///
+/// Controller의 `GET /api/v1/version` 응답에 매핑된다.
+/// 제품명, 버전, 아키텍처, vmcore 버전을 포함한다.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct VersionInfo {
     #[serde(default)]
@@ -146,10 +198,16 @@ pub struct VersionInfo {
     pub vmcore_version: String,
 }
 
-/// API error type
+/// API 에러 타입
+///
+/// 두 가지 에러 유형을 구분한다:
+/// - `Network`: 네트워크 수준 에러 (연결 실패, 타임아웃, DNS 에러 등)
+/// - `Status`: HTTP 응답은 받았지만 상태 코드가 실패인 경우 (4xx, 5xx)
 #[derive(Debug)]
 pub enum ApiError {
+    /// 네트워크 에러 (연결 실패, 타임아웃 등)
     Network(reqwest::Error),
+    /// HTTP 에러 응답 (상태 코드, 응답 본문)
     Status(u16, String),
 }
 
@@ -169,6 +227,13 @@ impl std::fmt::Display for ApiError {
 }
 
 impl ApiClient {
+    /// 새 API 클라이언트를 생성한다.
+    ///
+    /// # 매개변수
+    /// - `base_url`: API 기본 URL. `None`이면 기본값 `http://localhost:8080/api/v1` 사용
+    ///
+    /// # 반환값
+    /// - 3초 타임아웃이 설정된 `ApiClient` 인스턴스
     pub fn new(base_url: Option<String>) -> Self {
         Self {
             base_url: base_url.unwrap_or_else(|| DEFAULT_BASE_URL.to_string()),
@@ -179,7 +244,11 @@ impl ApiClient {
         }
     }
 
-    /// Get version info
+    /// Controller 버전 정보를 조회한다 (`GET /api/v1/version`).
+    ///
+    /// # 반환값
+    /// - `Ok(VersionInfo)`: 제품명, 버전, 아키텍처, vmcore 버전
+    /// - `Err(ApiError)`: 네트워크 에러 또는 역직렬화 실패
     pub async fn version(&self) -> Result<VersionInfo, ApiError> {
         Ok(self
             .client
@@ -190,7 +259,11 @@ impl ApiClient {
             .await?)
     }
 
-    /// List all VMs
+    /// 모든 VM 목록을 조회한다 (`GET /api/v1/vms`).
+    ///
+    /// # 반환값
+    /// - `Ok(Vec<VmInfo>)`: VM 목록 (ID, 이름, 상태, vCPU, 메모리, 노드, 백엔드)
+    /// - `Err(ApiError)`: 네트워크 에러 또는 역직렬화 실패
     pub async fn list_vms(&self) -> Result<Vec<VmInfo>, ApiError> {
         Ok(self
             .client
@@ -201,7 +274,7 @@ impl ApiClient {
             .await?)
     }
 
-    /// List cluster nodes
+    /// 클러스터 노드 리소스 현황을 조회한다 (`GET /api/v1/nodes`).
     pub async fn list_nodes(&self) -> Result<Vec<NodeInfo>, ApiError> {
         Ok(self
             .client
@@ -212,7 +285,15 @@ impl ApiClient {
             .await?)
     }
 
-    /// Perform a VM lifecycle action (start/stop/pause/resume)
+    /// VM 생명주기 액션을 수행한다 (`POST /api/v1/vms/{id}/{action}`).
+    ///
+    /// # 매개변수
+    /// - `id`: VM ID
+    /// - `action`: "start", "stop", "pause", "resume" 중 하나
+    ///
+    /// # 반환값
+    /// - `Ok(VmInfo)`: 액션 후 갱신된 VM 정보
+    /// - `Err(ApiError::Status(409, _))`: 잘못된 상태 전이 (예: 이미 실행 중인 VM을 start)
     pub async fn vm_action(&self, id: i32, action: &str) -> Result<VmInfo, ApiError> {
         let resp = self
             .client
@@ -227,7 +308,14 @@ impl ApiClient {
         Ok(resp.json().await?)
     }
 
-    /// Delete a VM
+    /// VM을 삭제한다 (`DELETE /api/v1/vms/{id}`).
+    ///
+    /// # 매개변수
+    /// - `id`: 삭제할 VM의 ID
+    ///
+    /// # 반환값
+    /// - `Ok(())`: 성공 (HTTP 204)
+    /// - `Err(ApiError::Status(404, _))`: VM을 찾을 수 없음
     pub async fn delete_vm(&self, id: i32) -> Result<(), ApiError> {
         let resp = self
             .client
@@ -242,7 +330,7 @@ impl ApiClient {
         Ok(())
     }
 
-    /// List storage pools
+    /// 스토리지 풀 목록을 조회한다 (`GET /api/v1/storage/pools`).
     #[allow(dead_code)]
     pub async fn list_pools(&self) -> Result<Vec<PoolInfo>, ApiError> {
         Ok(self
@@ -254,7 +342,7 @@ impl ApiClient {
             .await?)
     }
 
-    /// List storage volumes
+    /// 스토리지 볼륨 목록을 조회한다 (`GET /api/v1/storage/volumes`).
     #[allow(dead_code)]
     pub async fn list_volumes(&self) -> Result<Vec<VolumeInfo>, ApiError> {
         Ok(self
@@ -266,7 +354,7 @@ impl ApiClient {
             .await?)
     }
 
-    /// List SDN zones
+    /// SDN 존 목록을 조회한다 (`GET /api/v1/network/zones`).
     #[allow(dead_code)]
     pub async fn list_zones(&self) -> Result<Vec<ZoneInfo>, ApiError> {
         Ok(self
@@ -278,7 +366,7 @@ impl ApiClient {
             .await?)
     }
 
-    /// List virtual networks
+    /// 가상 네트워크 목록을 조회한다 (`GET /api/v1/network/vnets`).
     #[allow(dead_code)]
     pub async fn list_vnets(&self) -> Result<Vec<VNetInfo>, ApiError> {
         Ok(self
@@ -290,7 +378,7 @@ impl ApiClient {
             .await?)
     }
 
-    /// Get cluster status
+    /// 클러스터 상태를 조회한다 (`GET /api/v1/cluster/status`).
     #[allow(dead_code)]
     pub async fn cluster_status(&self) -> Result<ClusterStatusInfo, ApiError> {
         Ok(self
@@ -302,7 +390,7 @@ impl ApiClient {
             .await?)
     }
 
-    /// List cluster nodes (HA)
+    /// HA 클러스터 노드 목록을 조회한다 (`GET /api/v1/cluster/nodes`).
     #[allow(dead_code)]
     pub async fn cluster_nodes(&self) -> Result<Vec<ClusterNodeInfo>, ApiError> {
         Ok(self
@@ -314,7 +402,14 @@ impl ApiClient {
             .await?)
     }
 
-    /// Check if WebSocket endpoint is available via HEAD request to /ws
+    /// WebSocket 엔드포인트 가용성을 확인한다 (`HEAD /ws`).
+    ///
+    /// Controller가 WebSocket을 지원하는지 1초 타임아웃으로 확인한다.
+    /// 최초 연결 성공 시 1회만 호출된다.
+    ///
+    /// # 반환값
+    /// - `true`: /ws 엔드포인트가 응답함
+    /// - `false`: 연결 실패 또는 타임아웃
     pub async fn check_ws(&self) -> bool {
         let ws_url = self.base_url.replace("/api/v1", "/ws");
         self.client
@@ -325,7 +420,16 @@ impl ApiClient {
             .is_ok()
     }
 
-    /// Create a VM
+    /// 새 VM을 생성한다 (`POST /api/v1/vms`).
+    ///
+    /// # 매개변수
+    /// - `name`: VM 이름
+    /// - `vcpus`: 가상 CPU 수
+    /// - `memory_mb`: 메모리 크기 (MB)
+    ///
+    /// # 반환값
+    /// - `Ok(VmInfo)`: 생성된 VM 정보 (상태: "configured")
+    /// - `Err(ApiError)`: 생성 실패
     #[allow(dead_code)]
     pub async fn create_vm(
         &self,

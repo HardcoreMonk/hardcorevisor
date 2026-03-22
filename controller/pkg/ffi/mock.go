@@ -1,7 +1,24 @@
-// Package ffi — Mock VMCore backend for testing without libvmcore.a
+// Package ffi — Mock VMCore 백엔드: libvmcore.a 없이 테스트하기 위한 순수 Go 구현
 //
-// Provides the same interface as the real CGo bindings but uses
-// pure Go in-memory state, enabling testing without Rust compilation.
+// # 패키지 목적
+//
+// 실제 CGo 바인딩(vmcore.go)과 동일한 VMCoreBackend 인터페이스를 구현하되,
+// 순수 Go 인메모리 상태 머신으로 동작한다. Rust 컴파일 없이 테스트 가능.
+//
+// # 아키텍처 위치
+//
+//	ComputeService
+//	    └── RustVMMBackend
+//	            │ VMCoreBackend 인터페이스
+//	            ├── MockVMCore (이 파일, 기본 사용)
+//	            └── vmcore.go  (빌드 태그 cgo_vmcore 시 사용)
+//
+// # VM 상태 머신
+//
+//	Created(0) → Configured(1) → Running(2) ⇄ Paused(3)
+//	                           ↘ Stopped(4)  ↙
+//
+// stateTransitionAllowed()가 유효한 전이를 검증한다.
 package ffi
 
 import (
@@ -10,24 +27,37 @@ import (
 	"sync/atomic"
 )
 
-// VMCoreBackend defines the interface for vmcore operations.
-// Both real CGo and mock implementations satisfy this interface.
+// VMCoreBackend — vmcore 작업을 위한 인터페이스.
+// 실제 CGo 바인딩(vmcore.go)과 Mock 구현(이 파일) 모두 이 인터페이스를 구현한다.
 type VMCoreBackend interface {
+	// Init — vmcore 라이브러리를 초기화한다.
 	Init() error
+	// Shutdown — vmcore를 종료하고 모든 VM을 정리한다.
 	Shutdown()
+	// Version — vmcore 버전 문자열을 반환한다 (예: "mock-0.1.0").
 	Version() string
+	// CreateVM — 새 VM을 생성하고 handle(양의 정수)을 반환한다.
 	CreateVM() (int32, error)
+	// DestroyVM — VM을 삭제한다. handle이 없으면 ErrNotFound.
 	DestroyVM(handle int32) error
+	// ConfigureVM — VM의 vCPU와 메모리를 설정한다 (Created → Configured 전이).
 	ConfigureVM(handle int32, vcpus uint32, memoryMB uint64) error
+	// StartVM — VM을 시작한다 (Configured → Running 전이).
 	StartVM(handle int32) error
+	// StopVM — VM을 중지한다 (Running/Paused → Stopped 전이).
 	StopVM(handle int32) error
+	// PauseVM — VM을 일시정지한다 (Running → Paused 전이).
 	PauseVM(handle int32) error
+	// ResumeVM — VM을 재개한다 (Paused → Running 전이).
 	ResumeVM(handle int32) error
+	// GetVMState — VM의 현재 상태 코드를 반환한다 (VMState* 상수).
 	GetVMState(handle int32) (int32, error)
+	// VMCount — 현재 관리 중인 VM 수를 반환한다.
 	VMCount() int32
 }
 
-// VMState mirrors vmcore VmState enum
+// VMState 상수 — vmcore의 VmState 열거형을 미러링한다.
+// Rust 측 panic_barrier.rs의 ErrorCode와 동기화되어야 한다.
 const (
 	VMStateCreated    = 0
 	VMStateConfigured = 1
@@ -36,7 +66,7 @@ const (
 	VMStateStopped    = 4
 )
 
-// mockVM represents an in-memory VM instance
+// mockVM — 인메모리 VM 인스턴스 (Mock 전용).
 type mockVM struct {
 	handle   int32
 	state    int32
@@ -44,7 +74,8 @@ type mockVM struct {
 	memoryMB uint64
 }
 
-// stateTransitionAllowed checks if the given transition is valid
+// stateTransitionAllowed — 주어진 상태 전이가 유효한지 검사한다.
+// vmcore의 kvm_mgr.rs::VmState::can_transition_to()와 동일한 규칙을 적용한다.
 func stateTransitionAllowed(from, to int32) bool {
 	switch {
 	case from == VMStateCreated && to == VMStateConfigured:
@@ -66,7 +97,8 @@ func stateTransitionAllowed(from, to int32) bool {
 	}
 }
 
-// MockVMCore is a pure-Go mock implementation of VMCoreBackend.
+// MockVMCore — VMCoreBackend의 순수 Go Mock 구현체.
+// mutex로 동시 접근을 보호하며, nextHandle로 고유 핸들을 할당한다.
 type MockVMCore struct {
 	mu         sync.RWMutex
 	vms        map[int32]*mockVM
@@ -74,7 +106,8 @@ type MockVMCore struct {
 	initialized bool
 }
 
-// NewMockVMCore creates a new mock VMCore backend.
+// NewMockVMCore — 새 Mock VMCore 백엔드를 생성한다.
+// Handle은 1부터 순차적으로 할당된다.
 func NewMockVMCore() *MockVMCore {
 	m := &MockVMCore{
 		vms: make(map[int32]*mockVM),
@@ -195,7 +228,8 @@ func (m *MockVMCore) VMCount() int32 {
 	return int32(len(m.vms))
 }
 
-// StateString converts a VmState int to its string representation.
+// StateString — VmState 정수 코드를 문자열로 변환한다.
+// API 응답에서 사용된다 (예: 2 → "running").
 func StateString(state int32) string {
 	switch state {
 	case VMStateCreated:

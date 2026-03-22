@@ -1,4 +1,35 @@
-//! App state and main event loop (Immediate Mode rendering)
+//! App 상태와 메인 이벤트 루프 (즉시 모드 렌더링 / Immediate Mode Rendering)
+//!
+//! ## 즉시 모드 렌더링 패턴
+//!
+//! 전통적인 GUI는 "상태가 바뀌면 해당 부분만 다시 그리는" 보존 모드(Retained Mode)를
+//! 사용하지만, Ratatui TUI는 **즉시 모드**를 사용한다:
+//!
+//! ```text
+//! ┌─────────────────────────────────────────┐
+//! │  루프 시작                               │
+//! │  ├─ 1. render(): 전체 UI를 처음부터 그림 │
+//! │  ├─ 2. handle_input(): 키 입력 처리      │
+//! │  └─ 3. tick(): API 폴링으로 데이터 갱신  │
+//! │  다시 루프 시작 ...                      │
+//! └─────────────────────────────────────────┘
+//! ```
+//!
+//! Ratatui의 더블 버퍼링이 이전 프레임과의 diff만 터미널에 출력하므로
+//! 매 프레임 전체를 그려도 깜빡임이 없다.
+//!
+//! ## 키바인딩 → 액션 → 상태 변경 흐름
+//!
+//! 1. `crossterm::event::read()`로 키 이벤트 수신
+//! 2. `Action::from_key()`가 KeyCode + 현재 Screen을 보고 Action 결정
+//! 3. `handle_key()`가 Action에 따라 App 상태 변경 (화면 전환, VM 제어 등)
+//! 4. 다음 render()에서 변경된 상태가 UI에 반영됨
+//!
+//! ## tick() 폴링 흐름
+//!
+//! `poll_interval`(기본 2초)마다 Controller REST API를 호출하여
+//! VM, 노드, 스토리지, 네트워크, HA 데이터를 갱신한다.
+//! `tokio::join!`으로 모든 API 호출을 병렬 실행하여 대기 시간을 최소화한다.
 
 use color_eyre::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -12,36 +43,60 @@ use crate::api_client::{
 use crate::keybindings::Action;
 use crate::ui;
 
-/// Which screen is currently active
+/// 현재 활성화된 화면을 나타내는 열거형
+///
+/// 숫자 키 1~6으로 전환한다. 각 화면은 `ui/` 모듈의 대응하는 `render()` 함수가 그린다.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
+    /// 대시보드: 클러스터 노드, VM 요약, 시스템 정보, 연결 상태를 2x2 그리드로 표시
     Dashboard,
+    /// VM 매니저: VM 테이블 + 생명주기 제어 (시작/중지/일시정지/삭제/생성)
     VmManager,
+    /// 스토리지 뷰: 스토리지 풀 + 볼륨 목록을 좌우 2열로 표시
     StorageView,
+    /// 네트워크 뷰: SDN 존, 가상 네트워크, 방화벽 규칙을 수직 3단으로 표시
     NetworkView,
+    /// 로그 뷰어: 이벤트 로그를 자동 스크롤로 표시 (최대 500개)
     LogViewer,
+    /// HA 모니터: 클러스터 상태 + 노드 목록을 좌우 2열로 표시
     HaMonitor,
 }
 
-/// Connection status to the Controller API
+/// Controller API 연결 상태
+///
+/// tick()의 API 호출 결과에 따라 자동으로 전환된다.
+/// 타이틀 바에 색상 인디케이터로 표시된다.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnStatus {
+    /// 초기 상태 — 아직 API 응답을 받지 못함
     Disconnected,
+    /// API 응답 정상 수신 중
     Connected,
+    /// API 호출 에러 발생
     Error,
 }
 
-/// State for the VM creation form
+/// VM 생성 폼의 입력 상태
+///
+/// VM Manager 화면에서 'c' 키를 누르면 팝업으로 표시된다.
+/// Tab/Shift+Tab으로 필드 간 이동, Enter로 제출, Esc로 취소한다.
 pub struct CreateFormState {
+    /// VM 이름 (필수, 빈 문자열이면 에러)
     pub name: String,
+    /// 가상 CPU 수 (기본값: "2")
     pub vcpus: String,
+    /// 메모리 크기 MB (기본값: "4096")
     pub memory_mb: String,
+    /// VMM 백엔드: "rustvmm" 또는 "qemu" (기본값: "rustvmm")
     pub backend: String,
+    /// 현재 포커스된 필드 인덱스 (0=name, 1=vcpus, 2=memory, 3=backend)
     pub focused_field: usize,
+    /// 유효성 검사 또는 API 에러 메시지
     pub error: Option<String>,
 }
 
 impl CreateFormState {
+    /// 기본값으로 새 폼 상태를 생성한다.
     pub fn new() -> Self {
         Self {
             name: String::new(),
@@ -54,62 +109,101 @@ impl CreateFormState {
     }
 }
 
-/// Main application state
+/// 메인 애플리케이션 상태
+///
+/// 모든 화면이 공유하는 단일 상태 구조체이다.
+/// `run()` 메서드가 즉시 모드 이벤트 루프를 실행하며,
+/// `tick()` 메서드가 주기적으로 Controller API를 폴링하여 데이터를 갱신한다.
 pub struct App {
+    /// false가 되면 이벤트 루프 종료 ('q' 키로 설정)
     pub running: bool,
+    /// 현재 활성 화면
     pub screen: Screen,
+    /// 이벤트 폴링 타임아웃 (기본 100ms — 입력 응답성과 CPU 사용률의 균형)
     pub tick_rate: Duration,
 
-    // API state
+    // ── API 상태 ──
+    /// REST API 클라이언트 (reqwest 기반, 3초 타임아웃)
     pub client: ApiClient,
+    /// 현재 API 연결 상태
     pub conn_status: ConnStatus,
+    /// 마지막 API 에러 메시지 (Status 패널에 표시)
     pub last_error: Option<String>,
 
-    // Data from Controller
+    // ── Controller에서 수신한 데이터 ──
+    /// VM 목록 (tick()마다 갱신)
     pub vms: Vec<VmInfo>,
+    /// 클러스터 노드 목록 (Dashboard용)
     pub nodes: Vec<NodeInfo>,
+    /// Controller 버전 정보 (최초 연결 시 1회 로드)
     pub version: VersionInfo,
 
-    // Storage data
+    // ── 스토리지 데이터 ──
+    /// 스토리지 풀 목록 (ZFS/Ceph)
     pub pools: Vec<PoolInfo>,
+    /// 스토리지 볼륨 목록
     pub volumes: Vec<VolumeInfo>,
 
-    // Network data
+    // ── 네트워크 데이터 ──
+    /// SDN 존 목록
     pub zones: Vec<ZoneInfo>,
+    /// 가상 네트워크 목록
     pub vnets: Vec<VNetInfo>,
 
-    // HA/Cluster data
+    // ── HA/클러스터 데이터 ──
+    /// 클러스터 전체 상태 (쿼럼, 리더, 헬스)
     pub cluster: Option<ClusterStatusInfo>,
+    /// HA 클러스터 노드 목록
     pub cluster_nodes: Vec<ClusterNodeInfo>,
 
-    // Log entries (circular buffer for recent events)
+    // ── 이벤트 로그 (순환 버퍼, 최대 500개) ──
+    /// VM 상태 변경, 연결 이벤트 등을 기록하는 로그 엔트리
     pub log_entries: Vec<String>,
 
-    // VM Manager selection
+    // ── VM Manager 선택 상태 ──
+    /// 현재 선택된 VM의 인덱스 (j/k 키로 이동)
     pub vm_selected: usize,
 
-    // VM detail view
+    // ── VM 상세 뷰 팝업 ──
+    /// true면 선택된 VM의 상세 정보 팝업을 표시
     pub show_vm_detail: bool,
 
-    // VM creation form
+    // ── VM 생성 폼 팝업 ──
+    /// true면 VM 생성 폼 팝업을 표시
     pub show_create_form: bool,
+    /// 생성 폼의 현재 입력 상태
     pub create_form: CreateFormState,
 
-    // Log viewer scroll offset
+    // ── 로그 뷰어 스크롤 ──
+    /// 로그 뷰어의 수직 스크롤 오프셋 (현재 자동 스크롤 사용)
     #[allow(dead_code)]
     pub log_scroll: u16,
 
-    // WebSocket readiness indicator
+    // ── WebSocket 상태 ──
+    /// Controller의 /ws 엔드포인트 사용 가능 여부
     pub ws_available: bool,
+    /// WebSocket 가용성 확인 완료 플래그 (1회만 확인)
     ws_check_done: bool,
 
-    // Polling
+    // ── API 폴링 타이머 ──
+    /// 마지막 API 폴링 시각
     last_poll: Instant,
+    /// API 폴링 주기 (기본 2초)
     poll_interval: Duration,
 }
 
 impl App {
+    /// 새 App 인스턴스를 생성한다.
+    ///
+    /// `HCV_API_ADDR` 환경변수가 설정되어 있으면 해당 주소의 Controller에 연결한다.
+    /// 미설정 시 기본값 `http://localhost:8080/api/v1`을 사용한다.
+    ///
+    /// # 예시
+    /// ```bash
+    /// HCV_API_ADDR=192.168.1.100:8080 cargo run -p hcvtui
+    /// ```
     pub fn new() -> Self {
+        // 환경변수에서 API 주소를 읽어온다 (예: "192.168.1.100:8080")
         let api_addr = std::env::var("HCV_API_ADDR")
             .ok()
             .map(|addr| format!("http://{}/api/v1", addr.trim_start_matches("http://")));
@@ -143,13 +237,29 @@ impl App {
         }
     }
 
-    /// Main event loop — Immediate Mode rendering
+    /// 메인 이벤트 루프 — 즉시 모드 렌더링 (Immediate Mode Rendering)
+    ///
+    /// 3단계 루프를 `running`이 false가 될 때까지 반복한다:
+    ///
+    /// 1. **렌더링**: 현재 App 상태를 기반으로 전체 UI를 그린다.
+    ///    Ratatui의 더블 버퍼링이 변경된 셀만 터미널에 출력한다.
+    /// 2. **입력 처리**: `tick_rate`(100ms) 동안 키 입력을 대기한다.
+    ///    입력이 있으면 `handle_key()`로 처리한다.
+    /// 3. **API 폴링**: `poll_interval`(2초)이 경과했으면 `tick()`으로
+    ///    Controller API를 호출하여 데이터를 갱신한다.
+    ///
+    /// # 매개변수
+    /// - `terminal`: Ratatui 터미널 인스턴스 (프레임 렌더링용)
+    ///
+    /// # 반환값
+    /// - `Ok(())`: 정상 종료 ('q' 키로 종료)
+    /// - `Err(...)`: 터미널 I/O 에러
     pub async fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         while self.running {
-            // 1. Render current frame
+            // 1단계: 현재 프레임 렌더링 (즉시 모드 — 매번 전체를 다시 그림)
             terminal.draw(|frame| self.render(frame))?;
 
-            // 2. Handle input events (non-blocking with timeout)
+            // 2단계: 입력 이벤트 처리 (tick_rate 동안 논블로킹 대기)
             if event::poll(self.tick_rate)? {
                 if let Event::Key(key) = event::read()? {
                     if key.kind == KeyEventKind::Press {
@@ -158,7 +268,7 @@ impl App {
                 }
             }
 
-            // 3. Tick: poll API data on interval
+            // 3단계: 주기적 API 폴링 (poll_interval마다 실행)
             if self.last_poll.elapsed() >= self.poll_interval {
                 self.tick().await;
                 self.last_poll = Instant::now();
@@ -167,7 +277,11 @@ impl App {
         Ok(())
     }
 
-    /// Poll the Controller API for fresh data
+    /// Controller REST API를 폴링하여 최신 데이터를 가져온다.
+    ///
+    /// `tokio::join!`으로 8개 API 호출을 동시에 실행하여 대기 시간을 최소화한다.
+    /// VM 상태 변경, VM 추가/삭제를 감지하여 이벤트 로그에 기록한다.
+    /// 버전 정보와 WebSocket 가용성은 최초 연결 시 1회만 확인한다.
     async fn tick(&mut self) {
         let old_vm_count = self.vms.len();
         let old_vm_states: Vec<(String, String)> = self
@@ -283,7 +397,10 @@ impl App {
         }
     }
 
-    /// Push a log entry, keeping at most 500 entries
+    /// 로그 엔트리를 추가한다. 최대 500개를 유지하며 초과 시 가장 오래된 항목을 제거한다.
+    ///
+    /// # 매개변수
+    /// - `msg`: 로그 메시지 (UNIX 타임스탬프가 자동 추가됨)
     fn push_log(&mut self, msg: String) {
         use std::time::SystemTime;
         let ts = SystemTime::now()
@@ -297,7 +414,10 @@ impl App {
         }
     }
 
-    /// Render the current screen
+    /// 현재 활성 화면을 렌더링한다.
+    ///
+    /// `self.screen` 값에 따라 해당 UI 모듈의 `render()` 함수를 호출한다.
+    /// 즉시 모드이므로 매 프레임 전체를 처음부터 그린다.
     fn render(&self, frame: &mut Frame) {
         match self.screen {
             Screen::Dashboard => ui::dashboard::render(frame, self),
@@ -309,9 +429,17 @@ impl App {
         }
     }
 
-    /// Handle key press events
+    /// 키 입력 이벤트를 처리한다.
+    ///
+    /// 입력 처리 우선순위:
+    /// 1. VM 생성 폼이 열려 있으면 → 폼 전용 입력 처리 (`handle_form_key`)
+    /// 2. VM 상세 팝업이 열려 있으면 → Enter/Esc만 처리 (닫기)
+    /// 3. 그 외 → 글로벌/화면별 키바인딩 처리 (`Action::from_key`)
+    ///
+    /// # 매개변수
+    /// - `key_event`: crossterm에서 수신한 키 이벤트
     async fn handle_key(&mut self, key_event: KeyEvent) {
-        // When create form is open, capture all input for the form
+        // VM 생성 폼이 열려 있으면 모든 입력을 폼에서 처리
         if self.show_create_form {
             self.handle_form_key(key_event).await;
             return;
@@ -383,7 +511,14 @@ impl App {
         }
     }
 
-    /// Handle key input when the VM creation form is active
+    /// VM 생성 폼에서의 키 입력을 처리한다.
+    ///
+    /// - Esc: 폼 닫기
+    /// - Tab/Down: 다음 필드로 이동
+    /// - Shift+Tab/Up: 이전 필드로 이동
+    /// - Enter: 폼 제출 (유효성 검사 후 API 호출)
+    /// - Backspace: 현재 필드에서 마지막 문자 삭제
+    /// - 문자 입력: 현재 필드에 문자 추가 (Ctrl/Alt 조합은 무시)
     async fn handle_form_key(&mut self, key_event: KeyEvent) {
         match key_event.code {
             KeyCode::Esc => {
@@ -417,7 +552,11 @@ impl App {
         }
     }
 
-    /// Get a mutable reference to the currently focused form field
+    /// 현재 포커스된 폼 필드의 가변 참조를 반환한다.
+    ///
+    /// # 반환값
+    /// - `focused_field` 인덱스에 해당하는 필드의 `&mut String`
+    ///   (0=name, 1=vcpus, 2=memory_mb, 3=backend)
     fn current_form_field_mut(&mut self) -> &mut String {
         match self.create_form.focused_field {
             0 => &mut self.create_form.name,
@@ -428,7 +567,16 @@ impl App {
         }
     }
 
-    /// Submit the create form: validate and call API
+    /// VM 생성 폼을 제출한다: 유효성 검사 후 Controller API를 호출한다.
+    ///
+    /// 유효성 검사 실패 시 `create_form.error`에 에러 메시지를 설정한다.
+    /// API 호출 성공 시 `tick()`으로 VM 목록을 갱신하고 폼을 닫는다.
+    ///
+    /// # 에러 조건
+    /// - 이름이 비어 있으면 에러
+    /// - vCPUs가 양의 정수가 아니면 에러
+    /// - Memory가 양의 정수가 아니면 에러
+    /// - API 호출 실패 시 에러
     async fn submit_create_form(&mut self) {
         let name = self.create_form.name.trim().to_string();
         if name.is_empty() {
@@ -461,7 +609,11 @@ impl App {
         }
     }
 
-    /// Get the currently selected VM (if any)
+    /// 현재 선택된 VM을 반환한다 (선택이 유효한 경우).
+    ///
+    /// # 반환값
+    /// - `Some(&VmInfo)`: 선택된 VM이 존재하는 경우
+    /// - `None`: VM 목록이 비어 있거나 인덱스가 범위를 초과한 경우
     #[allow(dead_code)]
     pub fn selected_vm(&self) -> Option<&VmInfo> {
         self.vms.get(self.vm_selected)

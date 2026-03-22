@@ -1,15 +1,33 @@
-// Package compute — QEMU Backend for general-purpose VM workloads
+// Package compute — QEMU 백엔드: 범용 VM 워크로드 관리
 //
-// Implements VMMBackend using QEMU Machine Protocol (QMP) for VM lifecycle.
-// Suitable for: Windows VMs, GPU passthrough, legacy OS, full device emulation.
+// # 패키지 목적
 //
-// Architecture (ADR-006):
+// QEMU Machine Protocol(QMP)을 사용하여 VM 생명주기를 관리한다.
+// Windows VM, GPU 패스스루, 레거시 OS, 전체 디바이스 에뮬레이션에 적합하다.
+//
+// # 아키텍처 (ADR-006)
 //
 //	Go Controller
 //	    │
-//	    ├── QEMUBackend (this) ──→ QMP socket ──→ qemu-system-x86_64
-//	    │                     ──→ libvirt (future)
-//	    └── RustVMMBackend    ──→ vmcore FFI ──→ /dev/kvm
+//	    ├── QEMUBackend (이 파일) ──→ QMP unix socket ──→ qemu-system-x86_64
+//	    │                         ──→ libvirt (향후 구현)
+//	    └── RustVMMBackend        ──→ vmcore FFI ──→ /dev/kvm
+//
+// # 동작 모드
+//
+//   - Emulated (에뮬레이션): 인메모리 상태 머신. QEMU 바이너리 불필요. 개발/테스트용.
+//   - Real (실제): QMP unix socket으로 qemu-system-x86_64 프로세스 제어. 프로덕션용.
+//
+// # QMP 명령 매핑
+//
+//	start  → "cont" (계속 실행)
+//	stop   → "system_powerdown" (전원 종료)
+//	pause  → "stop" (일시정지)
+//	resume → "cont" (재개)
+//
+// # Handle 범위
+//
+// QEMU 백엔드의 Handle은 10000부터 시작하여 RustVMM(1~9999)과 충돌을 방지한다.
 package compute
 
 import (
@@ -20,15 +38,15 @@ import (
 	"time"
 )
 
-// qemuProcess tracks a QEMU process and its QMP socket path.
+// qemuProcess — QEMU 프로세스와 QMP 소켓 경로를 추적한다 (Real 모드에서 사용).
 type qemuProcess struct {
 	socketPath string
 	cmd        *exec.Cmd
 }
 
-// QEMUBackend manages VMs via QEMU/QMP.
-// Current implementation is in-memory for dev/test.
-// Production will use QMP unix socket or libvirt API.
+// QEMUBackend — QEMU/QMP를 통해 VM을 관리하는 백엔드.
+// 현재 구현: Emulated 모드(인메모리, 개발/테스트).
+// 프로덕션: Real 모드(QMP unix socket 또는 libvirt API).
 type QEMUBackend struct {
 	mu          sync.RWMutex
 	vms         map[int32]*VMInfo
@@ -40,7 +58,7 @@ type QEMUBackend struct {
 	networkMode string // "user", "tap", "none"
 }
 
-// QEMUConfig holds QEMU backend configuration.
+// QEMUConfig — QEMU 백엔드 설정.
 type QEMUConfig struct {
 	QMPSocket   string // unix socket path, e.g. /var/run/qemu/qmp.sock
 	Emulated    bool   // true = in-memory mock (no QEMU binary needed)
@@ -48,8 +66,9 @@ type QEMUConfig struct {
 	NetworkMode string // "user" (SLIRP), "tap", "none" (default: "user")
 }
 
-// NewQEMUBackend creates a QEMU backend.
-// If config is nil or Emulated is true, uses in-memory emulation.
+// NewQEMUBackend — QEMU 백엔드를 생성한다.
+// config가 nil이거나 Emulated=true이면 인메모리 에뮬레이션 모드로 동작한다.
+// Handle ID는 10000부터 시작하여 RustVMM(1~9999)과 충돌을 방지한다.
 func NewQEMUBackend(config *QEMUConfig) *QEMUBackend {
 	b := &QEMUBackend{
 		vms:       make(map[int32]*VMInfo),
@@ -168,7 +187,11 @@ func (b *QEMUBackend) ListVMs() []*VMInfo {
 
 // ── State transitions ────────────────────────────────
 
-// Valid QEMU state transitions (matches kvm_mgr.rs VmState)
+// QEMU VM 상태 전이 규칙 (kvm_mgr.rs의 VmState와 동일)
+//
+//	configured → running, stopped
+//	running    → paused, stopped
+//	paused     → running, stopped
 var qemuValidTransitions = map[string]map[string]bool{
 	"configured": {"running": true, "stopped": true},
 	"running":    {"paused": true, "stopped": true},

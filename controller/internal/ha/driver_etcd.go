@@ -1,4 +1,13 @@
-// Package ha — etcd-backed HA driver with leader election
+// etcd 기반 HA 드라이버 — 분산 노드 등록 및 펜싱 영속화
+//
+// etcd에 노드 상태와 펜싱 이벤트를 저장하여 클러스터 재시작 후에도 유지한다.
+// MemoryDriver를 임베딩하여 기본 동작(quorum 계산, 펜싱 로직)을 위임받는다.
+//
+// etcd 키 규칙:
+//   - "ha/nodes/{name}": 노드 상태 (JSON 직렬화된 ClusterNode)
+//   - "ha/fence-events/{id}": 펜싱 이벤트 (JSON 직렬화된 FenceEvent)
+//
+// 폴백: etcd 접근 불가 시 임베딩된 MemoryDriver의 데이터 사용
 package ha
 
 import (
@@ -9,15 +18,20 @@ import (
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/store"
 )
 
-// EtcdDriver implements HADriver backed by etcd for distributed HA state.
+// EtcdDriver 는 etcd 기반의 분산 HA 상태를 관리하는 드라이버이다.
+// MemoryDriver를 임베딩하여 기본 동작을 위임받고,
+// etcd에 노드 상태와 펜싱 이벤트를 영속화한다.
 type EtcdDriver struct {
 	MemoryDriver // embed for base behavior
 	store        store.Store
 	nodeName     string
 }
 
-// NewEtcdDriver creates an etcd-backed HA driver.
-// It registers the current node in etcd and embeds a MemoryDriver for fallback.
+// NewEtcdDriver 는 etcd 기반 HA 드라이버를 생성한다.
+// 현재 노드를 etcd에 등록하고, 폴백을 위해 MemoryDriver를 임베딩한다.
+// etcd 키: "ha/nodes/{nodeName}" (JSON 직렬화된 ClusterNode)
+//
+// 호출 시점: Controller 초기화 시 HA 드라이버가 "etcd"일 때
 func NewEtcdDriver(kvStore store.Store, nodeName string) *EtcdDriver {
 	d := &EtcdDriver{
 		store:    kvStore,
@@ -37,10 +51,11 @@ func NewEtcdDriver(kvStore store.Store, nodeName string) *EtcdDriver {
 	return d
 }
 
-// Name returns the driver name.
+// Name 은 드라이버 이름 "etcd"를 반환한다.
 func (d *EtcdDriver) Name() string { return "etcd" }
 
-// GetClusterStatus reads node states from etcd and computes quorum.
+// GetClusterStatus 는 etcd에서 노드 상태를 읽어 quorum을 계산한다.
+// ListNodes()를 호출하여 노드 목록을 가져온 후 집계한다.
 func (d *EtcdDriver) GetClusterStatus() (*ClusterStatus, error) {
 	nodes, err := d.ListNodes()
 	if err != nil {
@@ -67,8 +82,9 @@ func (d *EtcdDriver) GetClusterStatus() (*ClusterStatus, error) {
 	return cs, nil
 }
 
-// ListNodes reads from etcd "ha/nodes/" prefix.
-// Falls back to the embedded MemoryDriver if etcd is unavailable.
+// ListNodes 는 etcd의 "ha/nodes/" 접두사로 노드 목록을 조회한다.
+// etcd 접근 불가 또는 저장된 노드가 없으면 MemoryDriver로 폴백한다.
+// JSON 파싱 실패한 항목은 건너뛴다.
 func (d *EtcdDriver) ListNodes() ([]*ClusterNode, error) {
 	kvs, err := d.store.List(context.Background(), "ha/nodes/")
 	if err != nil {
@@ -98,7 +114,14 @@ func (d *EtcdDriver) ListNodes() ([]*ClusterNode, error) {
 	return nodes, nil
 }
 
-// FenceNode fences a node and persists the fence event to etcd.
+// FenceNode 은 노드를 펜싱하고 이벤트를 etcd에 영속화한다.
+//
+// 처리 순서:
+//  1. MemoryDriver.FenceNode() 호출 (인메모리 상태 변경)
+//  2. 펜싱 이벤트를 "ha/fence-events/{id}" 키로 etcd에 저장
+//  3. 노드 상태를 "ha/nodes/{name}" 키로 etcd에 갱신 (NodeFenced)
+//
+// etcd 저장 실패는 무시 (best-effort 영속화)
 func (d *EtcdDriver) FenceNode(nodeName, reason, action string) (*FenceEvent, error) {
 	event, err := d.MemoryDriver.FenceNode(nodeName, reason, action)
 	if err != nil {

@@ -1,4 +1,20 @@
-//! Network View screen — SDN zones, virtual networks, and firewall summary
+//! 네트워크 뷰 화면 — SDN 존, 가상 네트워크, 방화벽 규칙을 표시한다.
+//!
+//! ## 레이아웃 구조
+//!
+//! ```text
+//! ┌─── 타이틀 바 ────────────────────────────┐
+//! │  HardCoreVisor │ Network View │ Connected │
+//! ├──────────────────────────────────────────┤
+//! │  SDN Zones (40%)                         │  ← 수직 3단 분할
+//! ├──────────────────────────────────────────┤
+//! │  Virtual Networks (40%)                  │
+//! ├──────────────────────────────────────────┤
+//! │  Firewall Rules (5줄)                    │
+//! ├──────────────────────────────────────────┤
+//! │  [1]Dash [2]VMs [3]Storage ...           │
+//! └──────────────────────────────────────────┘
+//! ```
 
 use crate::app::{App, ConnStatus};
 use ratatui::{
@@ -9,6 +25,9 @@ use ratatui::{
     Frame,
 };
 
+/// 네트워크 뷰 화면을 렌더링한다.
+///
+/// SDN 존 테이블, 가상 네트워크 테이블, 방화벽 요약의 수직 3단 구조이다.
 pub fn render(frame: &mut Frame, app: &App) {
     let area = frame.area();
 
@@ -98,6 +117,7 @@ pub fn render(frame: &mut Frame, app: &App) {
     frame.render_widget(status, chunks[2]);
 }
 
+/// SDN 존 테이블을 렌더링한다 (이름, 타입, MTU, 브리지, 상태).
 fn render_zones_table(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let header_cells = ["NAME", "TYPE", "MTU", "BRIDGE", "STATUS"].iter().map(|h| {
         Cell::from(*h).style(
@@ -147,6 +167,7 @@ fn render_zones_table(frame: &mut Frame, app: &App, area: ratatui::layout::Rect)
     frame.render_widget(table, area);
 }
 
+/// 가상 네트워크 테이블을 렌더링한다 (ID, 존, 이름, 태그, 서브넷, 상태).
 fn render_vnets_table(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let header_cells = ["ID", "ZONE", "NAME", "TAG", "SUBNET", "STATUS"]
         .iter()
@@ -200,6 +221,10 @@ fn render_vnets_table(frame: &mut Frame, app: &App, area: ratatui::layout::Rect)
     frame.render_widget(table, area);
 }
 
+/// 방화벽 규칙 요약을 렌더링한다.
+///
+/// 현재는 "No rules configured" 메시지만 표시한다.
+/// 방화벽 규칙은 Controller API를 통해 관리한다.
 fn render_firewall_summary(frame: &mut Frame, area: ratatui::layout::Rect) {
     let block = Block::default()
         .title(" Firewall Rules ")

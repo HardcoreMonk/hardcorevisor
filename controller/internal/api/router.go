@@ -1,4 +1,20 @@
-// Package api — REST API Gateway with middleware chain
+// Package api — REST API 게이트웨이 + 미들웨어 체인
+//
+// # 패키지 목적
+//
+// Go Controller의 REST API 엔드포인트와 미들웨어를 정의한다.
+// Services 구조체를 통해 5개 백엔드 서비스(Compute, Storage, Network,
+// Peripheral, HA)를 HTTP 핸들러에 연결한다.
+//
+// # 아키텍처 위치
+//
+//	HTTP 요청 → 미들웨어 체인 → HTTP 핸들러 → 서비스 레이어 → 백엔드
+//
+// # 사용된 패턴
+//
+//   - Services 기반 라우터: nil이면 스텁 모드, 값이 있으면 라이브 모드
+//   - 미들웨어 체인: 데코레이터 패턴으로 HTTP 핸들러를 감싸서 횡단 관심사 처리
+//   - 구조화된 에러 응답: APIError 타입으로 일관된 에러 형식 제공
 package api
 
 import (
@@ -30,7 +46,7 @@ import (
 	"github.com/HardcoreMonk/hardcorevisor/controller/pkg/ffi"
 )
 
-// VersionInfo holds version metadata returned by /api/v1/version
+// VersionInfo — /api/v1/version에서 반환되는 버전 메타데이터.
 type VersionInfo struct {
 	Version   string `json:"version"`
 	GitCommit string `json:"git_commit"`
@@ -38,7 +54,11 @@ type VersionInfo struct {
 	VMCore    string `json:"vmcore_version"`
 }
 
-// Services aggregates all backend services for the API layer.
+// Services — API 레이어가 사용하는 모든 백엔드 서비스를 집약한 구조체.
+//
+// 각 서비스가 nil이면 해당 기능의 엔드포인트가 등록되지 않는다.
+// Compute는 ComputeProvider 인터페이스를 사용하여 ComputeService와
+// PersistentComputeService를 투명하게 교체할 수 있다.
 type Services struct {
 	Compute    compute.ComputeProvider
 	Storage    *storage.Service
@@ -53,9 +73,27 @@ type Services struct {
 	EventHub   *EventHub
 }
 
-// NewRouter creates the HTTP router with middleware.
-// If svc is nil, stub handlers are used (for backwards compatibility).
-// rbacUsers may be nil to disable RBAC.
+// NewRouter — 미들웨어가 적용된 HTTP 라우터를 생성한다.
+//
+// # 매개변수
+//   - svc: 백엔드 서비스 집합. nil이면 스텁 핸들러 사용 (하위 호환성)
+//   - rbacUsers: RBAC 사용자 맵. 비어 있거나 nil이면 RBAC 비활성화
+//
+// # 미들웨어 체인 (바깥쪽부터 적용 순서)
+//
+//  1. RequestID: 모든 요청에 X-Request-Id 헤더 부여 (추적용)
+//  2. Version: X-API-Version 헤더 부여 + 폐기 경로 감지
+//  3. Audit: 모든 API 호출을 구조화 JSON으로 감사 로깅
+//  4. Logging: 요청 처리 시간 기록
+//  5. Metrics: Prometheus 메트릭 수집 (요청 수, 레이턴시)
+//  6. RBAC: Basic Auth 기반 역할 검증 (admin/operator/viewer)
+//  7. CORS: Cross-Origin 요청 허용 + OPTIONS preflight 처리
+//  8. RateLimit: 토큰 버킷 속도 제한 (HCV_RATE_LIMIT 환경변수)
+//  9. Recovery: 패닉 복구 → 500 응답 반환 (서버 안정성 보장)
+//
+// # 반환값
+//
+// 미들웨어가 적용된 http.Handler
 var metricsRegistered sync.Once
 
 func NewRouter(svc *Services, rbacUsers ...map[string]auth.RBACUser) http.Handler {
@@ -183,11 +221,13 @@ func NewRouter(svc *Services, rbacUsers ...map[string]auth.RBACUser) http.Handle
 		mux.HandleFunc("GET /api/v1/api-info", handleAPIInfo)
 	}
 
-	// Middleware chain: RequestID → Audit → Logging → Metrics → RBAC → CORS → RateLimit → Recovery
+	// 미들웨어 체인 구성 (안쪽부터 바깥쪽으로 감싸는 순서)
+	// 실행 순서는 반대: RequestID → Version → Audit → Logging → Metrics → RBAC → CORS → RateLimit → Recovery → Handler
 	var handler http.Handler = mux
+	// 9. Recovery: 핸들러 패닉 시 500 응답 반환, 서버 크래시 방지
 	handler = recoveryMiddleware(handler)
 
-	// Rate limiting — read HCV_RATE_LIMIT env var (requests per second, 0 = no limit)
+	// 8. RateLimit: 토큰 버킷 속도 제한 (HCV_RATE_LIMIT 환경변수, 초당 요청 수)
 	if rlStr := os.Getenv("HCV_RATE_LIMIT"); rlStr != "" {
 		if rate, err := strconv.Atoi(rlStr); err == nil && rate > 0 {
 			limiter := NewRateLimiter(float64(rate), rate)
@@ -195,30 +235,38 @@ func NewRouter(svc *Services, rbacUsers ...map[string]auth.RBACUser) http.Handle
 		}
 	}
 
+	// 7. CORS: Cross-Origin 요청 허용 + OPTIONS preflight 처리
 	handler = corsMiddleware(handler)
 
-	// RBAC middleware — only if users are configured
+	// 6. RBAC: Basic Auth 기반 역할 검증 (설정된 경우만 활성화)
 	if len(rbacUsers) > 0 && rbacUsers[0] != nil {
 		handler = auth.RBACMiddleware(rbacUsers[0])(handler)
 	}
 
+	// 5. Metrics: Prometheus 메트릭 수집 (hcv_api_requests_total 등)
 	handler = metrics.InstrumentHandler(handler)
+	// 4. Logging: 요청 처리 시간을 로그에 기록
 	handler = loggingMiddleware(handler)
 
-	// Audit middleware — always on
+	// 3. Audit: 모든 API 호출을 구조화 JSON으로 감사 로깅 (항상 활성)
 	auditLogger := auth.NewAuditLogger()
 	handler = auth.AuditMiddleware(auditLogger)(handler)
 
+	// 2. Version: X-API-Version 헤더 부여 + 폐기 경로 감지
 	handler = versionMiddleware(handler)
+	// 1. RequestID: 모든 요청에 고유 X-Request-Id 부여 (추적용)
 	handler = requestIDMiddleware(handler)
 
 	return handler
 }
 
-// ── Middleware ────────────────────────────────────────────
+// ── 미들웨어 ────────────────────────────────────────────
 
 var requestCounter atomic.Uint64
 
+// requestIDMiddleware — 모든 요청에 고유한 X-Request-Id 헤더를 부여한다.
+// 형식: "hcv-{밀리초타임스탬프}-{순차카운터}"
+// 로그와 에러 추적에 사용된다.
 func requestIDMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cnt := requestCounter.Add(1)
@@ -228,6 +276,8 @@ func requestIDMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// loggingMiddleware — 요청 처리 시간을 로그에 기록한다.
+// 출력 형식: "원격주소 메서드 경로 소요시간"
 func loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -236,6 +286,8 @@ func loggingMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// corsMiddleware — CORS(Cross-Origin Resource Sharing) 헤더를 설정한다.
+// 모든 출처(*)를 허용하며, OPTIONS preflight 요청에 204를 반환한다.
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -249,6 +301,8 @@ func corsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// recoveryMiddleware — 핸들러에서 발생한 패닉을 복구하여 서버 크래시를 방지한다.
+// 패닉 발생 시 500 Internal Server Error를 JSON 형식으로 반환한다.
 func recoveryMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
@@ -261,12 +315,16 @@ func recoveryMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// ── Live Handlers (backed by compute service) ────────────
+// ── 라이브 핸들러 (Compute 서비스 기반) ────────────
 
+// handleHealth — 헬스 체크 엔드포인트 (GET /healthz).
+// 항상 {"status":"ok"}을 반환한다. 로드밸런서/모니터링에서 사용한다.
 func handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+// handleVersion — 버전 정보를 반환한다 (GET /api/v1/version).
+// 제품명, 버전, 아키텍처, git 커밋, 빌드 날짜, vmcore 버전을 포함한다.
 func (svc *Services) handleVersion(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{
 		"product":        "HardCoreVisor",
@@ -278,6 +336,8 @@ func (svc *Services) handleVersion(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
+// handleListVMs — VM 목록을 반환한다 (GET /api/v1/vms).
+// offset/limit 쿼리 파라미터로 페이지네이션을 지원한다.
 func (svc *Services) handleListVMs(w http.ResponseWriter, r *http.Request) {
 	vms := svc.Compute.ListVMs()
 	offset, limit := parsePagination(r)
@@ -292,6 +352,10 @@ func (svc *Services) handleListVMs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, paginate(vms[offset:end], total, offset, limit))
 }
 
+// handleCreateVM — 새 VM을 생성한다 (POST /api/v1/vms).
+// 요청 본문: {"name": "...", "vcpus": N, "memory_mb": N, "backend": "rustvmm|qemu"}
+// backend가 비어 있으면 BackendSelector가 자동 선택한다.
+// 성공 시 201 Created + 생성된 VM 정보를 반환한다.
 func (svc *Services) handleCreateVM(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name     string `json:"name"`
@@ -348,6 +412,9 @@ func (svc *Services) handleDeleteVM(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handleVMAction — VM 생명주기 액션을 수행하는 핸들러를 생성한다.
+// action: "start", "stop", "pause", "resume"
+// 잘못된 상태 전이 시 409 Conflict를 반환한다 (예: stopped → pause).
 func (svc *Services) handleVMAction(action string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		handle, err := parseVMID(r)
@@ -969,14 +1036,18 @@ func countVMsByState(vms []*compute.VMInfo) map[string]int {
 	return counts
 }
 
-// ── Helpers ──────────────────────────────────────────────
+// ── 헬퍼 함수 ──────────────────────────────────────────────
 
+// writeJSON — JSON 응답을 작성한다.
+// Content-Type을 application/json으로 설정하고 data를 JSON으로 인코딩한다.
 func writeJSON(w http.ResponseWriter, status int, data any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(data)
 }
 
+// parseVMID — URL 경로에서 VM ID를 추출하여 int32로 변환한다.
+// 유효하지 않은 ID 형식이면 에러를 반환한다.
 func parseVMID(r *http.Request) (int32, error) {
 	idStr := r.PathValue("id")
 	id, err := strconv.ParseInt(idStr, 10, 32)
@@ -986,6 +1057,9 @@ func parseVMID(r *http.Request) (int32, error) {
 	return int32(id), nil
 }
 
+// isStateError — 에러가 VM 상태 전이 에러인지 판별한다.
+// FFIError의 코드가 ErrInvalidState이거나, 메시지에 "invalid state"가 포함되면 true.
+// 409 Conflict 응답을 반환할지 결정하는 데 사용된다.
 func isStateError(err error) bool {
 	if err == nil {
 		return false

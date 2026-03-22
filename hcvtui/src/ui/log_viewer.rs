@@ -1,4 +1,24 @@
-//! Log Viewer screen — scrollable recent events log
+//! 로그 뷰어 화면 — 최근 이벤트 로그를 자동 스크롤로 표시한다.
+//!
+//! ## 레이아웃 구조
+//!
+//! ```text
+//! ┌─── 타이틀 바 ────────────────────────────┐
+//! │  HardCoreVisor │ Log Viewer │ N entries   │
+//! ├──────────────────────────────────────────┤
+//! │  [ts] [INFO] HardCoreVisor TUI started   │  ← 이벤트 로그
+//! │  [ts] [INFO] Connected to HCV v0.1.0     │
+//! │  [ts] [EVENT] VM 'web-01' state: ...     │     자동 스크롤
+//! ├──────────────────────────────────────────┤
+//! │  [1]Dash [2]VMs ... [5]Logs ...          │
+//! └──────────────────────────────────────────┘
+//! ```
+//!
+//! ## 로그 색상 규칙
+//! - `[ERROR]`: 빨간색
+//! - `[EVENT]`: 시안색
+//! - `[WARN]`: 노란색
+//! - 그 외: 흰색
 
 use crate::app::{App, ConnStatus};
 use ratatui::{
@@ -9,6 +29,10 @@ use ratatui::{
     Frame,
 };
 
+/// 로그 뷰어 화면을 렌더링한다.
+///
+/// 로그 엔트리를 색상 코딩하여 표시하며, 항상 최신 로그가 보이도록
+/// 자동 스크롤한다 (스크롤 오프셋 = 전체 줄 수 - 화면 높이).
 pub fn render(frame: &mut Frame, app: &App) {
     let area = frame.area();
 

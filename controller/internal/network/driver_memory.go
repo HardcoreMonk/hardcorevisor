@@ -1,3 +1,8 @@
+// 인메모리 네트워크 드라이버 — 개발/테스트 전용
+//
+// 존, VNet, 방화벽 규칙을 Go 맵에 저장한다.
+// 프로세스 재시작 시 데이터가 소실되며, 시스템에 아무런 변경을 가하지 않는다.
+// NftablesDriver의 기반 드라이버로도 임베딩되어 사용된다.
 package network
 
 import (
@@ -6,7 +11,10 @@ import (
 	"sync/atomic"
 )
 
-// MemoryDriver is an in-memory network driver for dev/test.
+// MemoryDriver 는 인메모리 네트워크 드라이버로, 개발/테스트 환경에서 사용한다.
+// NetworkDriver 인터페이스를 구현하며, 외부 의존성이 없다.
+// NftablesDriver가 이 구조체를 임베딩하여 존/VNet 관리를 위임받는다.
+// 기본 존 2개(vxlan-zone, simple-zone)와 VNet 2개가 미리 생성된다.
 type MemoryDriver struct {
 	mu         sync.RWMutex
 	zones      map[string]*Zone
@@ -16,7 +24,15 @@ type MemoryDriver struct {
 	nextRuleID atomic.Int32
 }
 
-// newMemoryDriver creates a MemoryDriver with default zones and vnets.
+// newMemoryDriver 는 기본 존과 VNet이 포함된 MemoryDriver를 생성한다.
+//
+// 기본 존:
+//   - vxlan-zone: VXLAN 존 (MTU 1450, vmbr1 브릿지)
+//   - simple-zone: Simple 존 (MTU 1500, vmbr0 브릿지)
+//
+// 기본 VNet:
+//   - vnet-1: prod-network (vxlan-zone, VNI 100, 10.0.1.0/24)
+//   - vnet-2: mgmt-network (simple-zone, VLAN 1, 192.168.1.0/24)
 func newMemoryDriver() *MemoryDriver {
 	d := &MemoryDriver{
 		zones: make(map[string]*Zone),
@@ -49,8 +65,10 @@ func newMemoryDriver() *MemoryDriver {
 	return d
 }
 
+// Name 은 드라이버 이름 "memory"를 반환한다.
 func (d *MemoryDriver) Name() string { return "memory" }
 
+// ListZones 는 인메모리에 저장된 모든 존을 반환한다.
 func (d *MemoryDriver) ListZones() ([]*Zone, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
@@ -61,6 +79,7 @@ func (d *MemoryDriver) ListZones() ([]*Zone, error) {
 	return result, nil
 }
 
+// ListVNets 는 인메모리 VNet 목록을 반환한다. zone이 빈 문자열이면 전체 반환.
 func (d *MemoryDriver) ListVNets(zone string) ([]*VNet, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
@@ -73,6 +92,7 @@ func (d *MemoryDriver) ListVNets(zone string) ([]*VNet, error) {
 	return result, nil
 }
 
+// CreateVNet 은 인메모리에 VNet을 생성한다. 존 미존재 시 에러 반환.
 func (d *MemoryDriver) CreateVNet(zone, name, subnet string, tag int) (*VNet, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -88,6 +108,7 @@ func (d *MemoryDriver) CreateVNet(zone, name, subnet string, tag int) (*VNet, er
 	return vnet, nil
 }
 
+// DeleteVNet 은 인메모리에서 VNet을 삭제한다. 미존재 시 에러 반환.
 func (d *MemoryDriver) DeleteVNet(id string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -98,6 +119,7 @@ func (d *MemoryDriver) DeleteVNet(id string) error {
 	return nil
 }
 
+// ListFirewallRules 는 인메모리 방화벽 규칙 목록을 반환한다.
 func (d *MemoryDriver) ListFirewallRules() ([]*FirewallRule, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
@@ -108,6 +130,8 @@ func (d *MemoryDriver) ListFirewallRules() ([]*FirewallRule, error) {
 	return result, nil
 }
 
+// CreateFirewallRule 은 인메모리에 방화벽 규칙을 생성한다.
+// 새 규칙은 기본적으로 Enabled=true로 설정된다.
 func (d *MemoryDriver) CreateFirewallRule(direction, action, protocol, source, dest, dport, comment string) (*FirewallRule, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -121,6 +145,7 @@ func (d *MemoryDriver) CreateFirewallRule(direction, action, protocol, source, d
 	return rule, nil
 }
 
+// DeleteFirewallRule 은 인메모리에서 방화벽 규칙을 삭제한다. 미존재 시 에러 반환.
 func (d *MemoryDriver) DeleteFirewallRule(id string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()

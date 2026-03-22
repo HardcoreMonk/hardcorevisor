@@ -1,4 +1,32 @@
-// Package main — hcvctl: HardCoreVisor CLI management tool
+// Package main — hcvctl: HardCoreVisor CLI 관리 도구
+//
+// # 패키지 목적
+//
+// Cobra 기반 CLI로 Controller REST API를 통해 HardCoreVisor 클러스터를 관리한다.
+//
+// # 주요 기능
+//
+//   - VM 관리: 목록/생성/시작/중지/마이그레이션
+//   - 스토리지: 풀 목록, 볼륨 CRUD
+//   - 네트워크: SDN 존, 가상 네트워크, 방화벽 규칙 조회
+//   - 디바이스: GPU/NIC/USB 패스스루 관리
+//   - 클러스터: 상태 조회, 노드 관리, 펜싱
+//   - 백업/스냅샷/템플릿/이미지 관리
+//   - 인터랙티브 셸 (REPL)
+//
+// # 글로벌 플래그
+//
+//   - --api: Controller API 주소 (기본: http://localhost:8080)
+//   - --output/-o: 출력 형식 (table/json/yaml, 기본: table)
+//   - --tls-skip-verify: TLS 인증서 검증 건너뛰기
+//   - --user/--password: Basic Auth 인증 정보
+//
+// # 사용 예시
+//
+//	hcvctl vm list -o json
+//	hcvctl vm create web-01 --vcpus 4 --memory 8192
+//	hcvctl cluster status
+//	hcvctl shell  # 인터랙티브 모드
 package main
 
 import (
@@ -29,6 +57,8 @@ var (
 	httpClient    *http.Client
 )
 
+// initHTTPClient — HTTP 클라이언트를 초기화한다.
+// --tls-skip-verify 플래그가 설정되면 TLS 인증서 검증을 건너뛴다.
 func initHTTPClient() {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	if tlsSkip {
@@ -408,8 +438,11 @@ To load fish completions:
 	}
 }
 
-// ── API helpers ──────────────────────────────────────────
+// ── API 헬퍼 함수 ──────────────────────────────────────────
 
+// newRequest — API 요청을 생성한다.
+// body가 있으면 Content-Type: application/json 헤더를 설정한다.
+// --user 플래그가 설정되면 Basic Auth를 추가한다.
 func newRequest(method, path string, body io.Reader) (*http.Request, error) {
 	req, err := http.NewRequest(method, apiAddr+path, body)
 	if err != nil {
@@ -476,8 +509,17 @@ func checkResponse(resp *http.Response) error {
 	return nil
 }
 
-// printOutput handles --output flag for list commands.
-// data is the raw API response for json/yaml, headers+rows for table.
+// printOutput — --output 플래그에 따라 목록 데이터를 출력한다.
+//
+// # 매개변수
+//   - data: json/yaml 출력용 원시 데이터
+//   - headers: table 출력의 헤더 행
+//   - rows: table 출력의 데이터 행
+//
+// # 출력 형식
+//   - "json": 들여쓰기된 JSON
+//   - "yaml": YAML
+//   - "table" (기본): 탭 정렬된 테이블
 func printOutput(data any, headers []string, rows [][]string) {
 	switch outputFormat {
 	case "json":

@@ -1,4 +1,20 @@
-//! HA Monitor screen — cluster status and node list
+//! HA 모니터 화면 — 클러스터 상태와 노드 목록을 표시한다.
+//!
+//! ## 레이아웃 구조
+//!
+//! ```text
+//! ┌─── 타이틀 바 ────────────────────────────┐
+//! │  HardCoreVisor │ HA Monitor │ Connected   │
+//! ├─────────────────┬────────────────────────┤
+//! │  Cluster Status │  Cluster Nodes          │  ← 좌40:우60 분할
+//! │  Quorum: YES    │  NAME  STATUS LEADER VM │
+//! │  Leader: node-1 │  node-01 online * YES 2 │
+//! │  Nodes: 3/3     │  node-02 online   no  1 │
+//! │  Health: healthy│  node-03 online   no  0 │
+//! ├─────────────────┴────────────────────────┤
+//! │  [1]Dash [2]VMs ... [6]HA                │
+//! └──────────────────────────────────────────┘
+//! ```
 
 use crate::app::{App, ConnStatus};
 use ratatui::{
@@ -9,6 +25,9 @@ use ratatui::{
     Frame,
 };
 
+/// HA 모니터 화면을 렌더링한다.
+///
+/// 좌측에 클러스터 전체 상태(쿼럼, 리더, 헬스), 우측에 노드 테이블을 표시한다.
 pub fn render(frame: &mut Frame, app: &App) {
     let area = frame.area();
 
@@ -91,6 +110,10 @@ pub fn render(frame: &mut Frame, app: &App) {
     frame.render_widget(status, chunks[2]);
 }
 
+/// 클러스터 상태 요약 패널을 렌더링한다.
+///
+/// 쿼럼 유지 여부, 리더 노드, 온라인/전체 노드 수, 헬스 상태를 표시한다.
+/// 클러스터 데이터가 아직 없으면 "Waiting for cluster data..." 메시지를 표시한다.
 fn render_cluster_status(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let block = Block::default()
         .title(" Cluster Status ")
@@ -166,6 +189,10 @@ fn render_cluster_status(frame: &mut Frame, app: &App, area: ratatui::layout::Re
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
+/// 클러스터 노드 테이블을 렌더링한다.
+///
+/// 노드 이름, 상태, 리더 여부, VM 수, 펜스 에이전트를 표시한다.
+/// 상태 색상: online=초록, offline=빨강, fenced=노랑
 fn render_node_list(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let header_cells = ["NAME", "STATUS", "LEADER", "VMs", "FENCE AGENT"]
         .iter()

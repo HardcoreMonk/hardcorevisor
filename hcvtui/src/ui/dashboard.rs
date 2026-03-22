@@ -1,5 +1,22 @@
-//! Dashboard screen — cluster overview with 4-panel layout
-//! Displays live data from the Go Controller REST API.
+//! 대시보드 화면 — 4패널 레이아웃으로 클러스터 개요를 표시한다.
+//!
+//! Go Controller REST API에서 실시간으로 가져온 데이터를 표시한다.
+//!
+//! ## 레이아웃 구조
+//!
+//! ```text
+//! ┌─── 타이틀 바 ────────────────────────────┐
+//! │  HardCoreVisor │ Dashboard │ ● Connected  │
+//! ├───────────────────┬──────────────────────┤
+//! │  Cluster Nodes    │  Virtual Machines     │  ← 상단 2열
+//! │  (노드 상태/CPU)  │  (상태별 VM 수)       │
+//! ├───────────────────┼──────────────────────┤
+//! │  System Info      │  Status               │  ← 하단 2열
+//! │  (버전/아키텍처)  │  (API/WS 상태/에러)   │
+//! ├───────────────────┴──────────────────────┤
+//! │  [1]Dash [2]VMs [3]Storage ...           │  ← 상태 바
+//! └──────────────────────────────────────────┘
+//! ```
 
 use ratatui::{
     layout::{Constraint, Direction, Layout},
@@ -11,6 +28,11 @@ use ratatui::{
 
 use crate::app::{App, ConnStatus};
 
+/// 대시보드 화면을 렌더링한다.
+///
+/// # 매개변수
+/// - `frame`: Ratatui 프레임 (위젯을 그리는 캔버스)
+/// - `app`: 애플리케이션 상태 (API 데이터, 연결 상태 등)
 pub fn render(frame: &mut Frame, app: &App) {
     let area = frame.area();
 
@@ -117,6 +139,10 @@ pub fn render(frame: &mut Frame, app: &App) {
     frame.render_widget(status, main_chunks[2]);
 }
 
+/// 클러스터 노드 패널을 렌더링한다.
+///
+/// 각 노드의 온라인/오프라인 상태, CPU/메모리 사용률, VM 수를 표시한다.
+/// 사용률이 60% 초과 시 노란색, 80% 초과 시 빨간색으로 표시한다.
 fn render_nodes_panel(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let block = Block::default()
         .title(format!(" Cluster Nodes ({}) ", app.nodes.len()))
@@ -170,6 +196,9 @@ fn render_nodes_panel(frame: &mut Frame, app: &App, area: ratatui::layout::Rect)
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
+/// VM 요약 패널을 렌더링한다.
+///
+/// 상태별(running/stopped/paused/configured) VM 수와 전체 합계를 표시한다.
 fn render_vm_summary_panel(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let block = Block::default()
         .title(format!(" Virtual Machines ({}) ", app.vms.len()))
@@ -218,6 +247,10 @@ fn render_vm_summary_panel(frame: &mut Frame, app: &App, area: ratatui::layout::
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
+/// 시스템 정보 패널을 렌더링한다.
+///
+/// Controller 버전, 제품명, 아키텍처, vmcore 버전을 표시한다.
+/// 데이터 로드 전에는 "Loading..." 메시지를 표시한다.
 fn render_system_info_panel(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let block = Block::default()
         .title(" System Info ")
@@ -259,6 +292,10 @@ fn render_system_info_panel(frame: &mut Frame, app: &App, area: ratatui::layout:
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
+/// 연결 상태 패널을 렌더링한다.
+///
+/// REST API 및 WebSocket 연결 상태를 표시한다.
+/// 에러가 발생한 경우 에러 메시지도 빨간색으로 표시한다.
 fn render_status_panel(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let block = Block::default()
         .title(" Status ")

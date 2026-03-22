@@ -1,4 +1,21 @@
-// Package config provides YAML + environment variable configuration for the controller.
+// Package config — Controller YAML 설정 파일 + 환경변수 오버라이드
+//
+// 설정 우선순위: 환경변수 > YAML 파일 > 기본값
+//
+// 지원 환경변수 (YAML보다 항상 우선):
+//   - HCV_API_ADDR: REST API 주소 (기본값: ":8080")
+//   - HCV_GRPC_ADDR: gRPC 서버 주소 (기본값: ":9090")
+//   - HCV_ETCD_ENDPOINTS: etcd 엔드포인트 (쉼표 구분, 미설정 시 인메모리)
+//   - HCV_TLS_CERT: TLS 인증서 파일 경로
+//   - HCV_TLS_KEY: TLS 키 파일 경로
+//   - HCV_RBAC_USERS: RBAC 사용자 정의 ("user:pass:role,...")
+//   - HCV_LOG_LEVEL: 로그 레벨 ("debug", "info", "warn", "error"). 기본값: "info"
+//   - HCV_LOG_FORMAT: 로그 형식 ("text", "json"). 기본값: "text"
+//   - HCV_STORAGE_DRIVER: 스토리지 드라이버 ("memory", "zfs", "ceph")
+//   - HCV_PERIPHERAL_DRIVER: 주변기기 드라이버 ("memory", "sysfs")
+//   - HCV_CEPH_POOL: Ceph 풀 이름 (기본값: "rbd")
+//
+// YAML 설정 파일 예제: hcv.example.yaml
 package config
 
 import (
@@ -7,7 +24,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Config is the top-level configuration for the HardCoreVisor controller.
+// Config 는 HardCoreVisor Controller의 최상위 설정 구조체이다.
 type Config struct {
 	API        APIConfig        `yaml:"api"`
 	GRPC       GRPCConfig       `yaml:"grpc"`
@@ -19,51 +36,52 @@ type Config struct {
 	Peripheral PeripheralConfig `yaml:"peripheral"`
 }
 
-// StorageConfig holds storage backend settings.
+// StorageConfig 는 스토리지 백엔드 설정을 보관한다.
 type StorageConfig struct {
 	Driver   string `yaml:"driver"`    // "memory" (default), "zfs", "ceph"
 	CephPool string `yaml:"ceph_pool"` // Ceph pool name (default: "rbd")
 }
 
-// PeripheralConfig holds peripheral backend settings.
+// PeripheralConfig 는 주변기기 백엔드 설정을 보관한다.
 type PeripheralConfig struct {
 	Driver string `yaml:"driver"` // "memory" (default), "sysfs"
 }
 
-// APIConfig holds REST API settings.
+// APIConfig 는 REST API 서버 설정을 보관한다.
 type APIConfig struct {
 	Addr      string `yaml:"addr"`       // default ":8080"
 	RateLimit int    `yaml:"rate_limit"` // requests per second, 0 = no limit
 }
 
-// GRPCConfig holds gRPC server settings.
+// GRPCConfig 는 gRPC 서버 설정을 보관한다.
 type GRPCConfig struct {
 	Addr string `yaml:"addr"` // default ":9090"
 }
 
-// EtcdConfig holds etcd connection settings.
+// EtcdConfig 는 etcd 연결 설정을 보관한다.
 type EtcdConfig struct {
 	Endpoints string `yaml:"endpoints"` // comma-separated
 }
 
-// TLSConfig holds TLS certificate paths.
+// TLSConfig 는 TLS 인증서 경로를 보관한다.
 type TLSConfig struct {
 	CertFile string `yaml:"cert_file"`
 	KeyFile  string `yaml:"key_file"`
 }
 
-// AuthConfig holds RBAC user definitions.
+// AuthConfig 는 RBAC 사용자 정의를 보관한다.
 type AuthConfig struct {
 	Users string `yaml:"users"` // user:pass:role,...
 }
 
-// LogConfig holds logging settings.
+// LogConfig 는 로깅 설정을 보관한다.
 type LogConfig struct {
 	Level  string `yaml:"level"`  // debug, info, warn, error
 	Format string `yaml:"format"` // text, json
 }
 
-// DefaultConfig returns a Config with sensible defaults.
+// DefaultConfig 는 합리적인 기본값으로 Config를 반환한다.
+// 기본값: API ":8080", gRPC ":9090", 로그 레벨 "info", 로그 형식 "text"
 func DefaultConfig() *Config {
 	return &Config{
 		API:  APIConfig{Addr: ":8080"},
@@ -72,9 +90,14 @@ func DefaultConfig() *Config {
 	}
 }
 
-// Load reads a YAML config file from path, then overlays environment variables.
-// Environment variables always take precedence over file values.
-// If the file does not exist, defaults are used without error.
+// Load 는 YAML 설정 파일을 읽고 환경변수를 오버레이한다.
+//
+// 처리 순서:
+//  1. DefaultConfig()로 기본값 생성
+//  2. YAML 파일 읽기 (파일 미존재 시 기본값 유지, 에러 아님)
+//  3. 환경변수 오버레이 (항상 YAML보다 우선)
+//
+// 호출 시점: Controller 시작 시 main.go에서 1회 호출
 func Load(path string) (*Config, error) {
 	cfg := DefaultConfig()
 

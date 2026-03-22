@@ -1,4 +1,22 @@
-//! VM Manager screen — live VM list with lifecycle actions
+//! VM 매니저 화면 — VM 테이블과 생명주기 제어
+//!
+//! ## 레이아웃 구조
+//!
+//! ```text
+//! ┌─── 타이틀 바 ────────────────────────────┐
+//! │  HardCoreVisor │ VM Manager │ N VMs      │
+//! ├──────────────────────────────────────────┤
+//! │  ID  NAME      STATE   vCPUs MEMORY ...  │  ← VM 테이블
+//! │  1   web-01    running  4    8192 MB     │
+//! │  2   db-01     stopped  8    32768 MB    │  ← j/k로 선택 이동
+//! ├──────────────────────────────────────────┤
+//! │  j/k navigate  s start  x stop  ...     │  ← 도움말 바
+//! └──────────────────────────────────────────┘
+//! ```
+//!
+//! ## 팝업
+//! - Enter: VM 상세 팝업 (ID, 이름, 상태, 리소스 정보)
+//! - c: VM 생성 폼 팝업 (이름, vCPU, 메모리, 백엔드 입력)
 
 use crate::app::App;
 use ratatui::{
@@ -9,6 +27,10 @@ use ratatui::{
     Frame,
 };
 
+/// VM 매니저 화면을 렌더링한다.
+///
+/// 타이틀 바, VM 테이블, 도움말 바의 3단 레이아웃으로 구성된다.
+/// VM 상세 또는 생성 폼 팝업이 활성화되어 있으면 테이블 위에 오버레이로 표시한다.
 pub fn render(frame: &mut Frame, app: &App) {
     let area = frame.area();
 
@@ -147,7 +169,10 @@ pub fn render(frame: &mut Frame, app: &App) {
     }
 }
 
-/// Render a centered popup showing VM details
+/// 중앙 정렬된 VM 상세 팝업을 렌더링한다.
+///
+/// 선택된 VM의 ID, 이름, 상태, vCPU, 메모리, 노드, 백엔드를 표시한다.
+/// 화면 크기의 60% x 70% 영역을 사용하며, Esc 또는 Enter로 닫는다.
 fn render_vm_detail(frame: &mut Frame, app: &App, area: Rect) {
     let vm = match app.vms.get(app.vm_selected) {
         Some(vm) => vm,
@@ -236,7 +261,11 @@ fn render_vm_detail(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(footer, detail_chunks[1]);
 }
 
-/// Render a centered popup for the VM creation form
+/// VM 생성 폼 팝업을 렌더링한다.
+///
+/// 4개 필드(Name, vCPUs, Memory, Backend)를 세로로 배치하며,
+/// 현재 포커스된 필드에 "> " 인디케이터와 커서("_")를 표시한다.
+/// Tab으로 필드 이동, Enter로 생성, Esc로 취소한다.
 fn render_create_form(frame: &mut Frame, app: &App, area: Rect) {
     let popup_width = 50u16.min(area.width.saturating_sub(4));
     let popup_height = 14u16.min(area.height.saturating_sub(4));
