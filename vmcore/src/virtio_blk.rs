@@ -1,7 +1,16 @@
-//! # Virtio Block Device — Emulation with FFI
+//! # Virtio 블록 디바이스 — 에뮬레이션 + FFI
 //!
-//! Provides a virtual block device using the Virtio Split Queue.
-//! Manages device lifecycle, queue processing, and I/O statistics.
+//! ## 목적
+//! Virtio Split Queue를 사용하여 가상 블록 디바이스를 제공한다.
+//! 디바이스 생명주기, 큐 처리, I/O 통계를 관리한다.
+//!
+//! ## 아키텍처 위치
+//! ```text
+//! Go Controller → hcv_virtio_blk_* FFI → virtio_blk (이 모듈) → SplitVirtqueue
+//! ```
+//!
+//! ## 스레드 안전성
+//! 전역 레지스트리(`Mutex<HashMap>`)로 보호. 모든 FFI 함수는 스레드 안전.
 
 use crate::panic_barrier::ErrorCode;
 use crate::virtio_split_queue::SplitVirtqueue;
@@ -11,7 +20,9 @@ use std::sync::{
     Mutex, OnceLock,
 };
 
-/// Virtio block device configuration (FFI-safe)
+/// Virtio 블록 디바이스 설정 (FFI-safe).
+///
+/// `capacity_sectors`는 512바이트 섹터 단위, `queue_size`는 2의 거듭제곱이어야 한다.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct VirtioBlkConfig {
@@ -36,7 +47,7 @@ impl Default for VirtioBlkConfig {
     }
 }
 
-/// I/O statistics (FFI-safe)
+/// I/O 통계 정보 (FFI-safe)
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct VirtioBlkStats {

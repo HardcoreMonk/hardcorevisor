@@ -1,7 +1,16 @@
-//! # Virtio Network Device — Emulation with FFI
+//! # Virtio 네트워크 디바이스 — 에뮬레이션 + FFI
 //!
-//! Provides a virtual network device using the Virtio Split Queue.
-//! Manages device lifecycle, RX/TX queue processing, and network statistics.
+//! ## 목적
+//! Virtio Split Queue를 사용하여 가상 네트워크 디바이스를 제공한다.
+//! MAC 주소 관리, RX/TX 큐 처리, 네트워크 통계를 관리한다.
+//!
+//! ## 아키텍처 위치
+//! ```text
+//! Go Controller → hcv_virtio_net_* FFI → virtio_net (이 모듈) → SplitVirtqueue
+//! ```
+//!
+//! ## 스레드 안전성
+//! 전역 레지스트리(`Mutex<HashMap>`)로 보호. 모든 FFI 함수는 스레드 안전.
 
 use crate::panic_barrier::ErrorCode;
 use crate::virtio_split_queue::SplitVirtqueue;
@@ -28,7 +37,7 @@ const DEFAULT_QUEUE_SIZE: u16 = 256;
 
 // ── FFI-safe structs ─────────────────────────────────────
 
-/// Virtio network device configuration (FFI-safe)
+/// Virtio 네트워크 디바이스 설정 (FFI-safe)
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct VirtioNetConfig {
@@ -49,7 +58,7 @@ impl Default for VirtioNetConfig {
     }
 }
 
-/// Network I/O statistics (FFI-safe)
+/// 네트워크 I/O 통계 정보 (FFI-safe)
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct VirtioNetStats {

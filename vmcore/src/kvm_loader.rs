@@ -1,11 +1,22 @@
-//! # Linux Kernel Boot — bzImage Loader
+//! # Linux 커널 부팅 — bzImage 로더
 //!
-//! Loads a Linux bzImage into guest memory following the x86 boot protocol.
-//! Sets up boot_params, e820 memory map, and command line for kernel boot.
+//! ## 목적
+//! x86 부팅 프로토콜에 따라 Linux bzImage를 게스트 메모리에 로드한다.
+//! boot_params, E820 메모리 맵, 커널 커맨드 라인을 설정한다.
+//!
+//! ## 핵심 개념
+//! - `HdrS` 매직(0x202): bzImage 형식 검증
+//! - `setup_sects`: 리얼 모드 셋업 섹터 수 (커널 오프셋 계산에 사용)
+//! - 커널은 1MB(0x100000)에 로드됨
+//! - boot_params는 0x7000에 배치, 커맨드 라인은 0x20000에 배치
+//! - E820 메모리 맵: 저메모리(0~640KB), 예약(640KB~1MB), 고메모리(1MB~끝)
+//!
+//! ## 스레드 안전성
+//! unsafe 함수들이므로 호출자가 게스트 메모리 동시 접근을 방지해야 한다.
 
 // ── Error type ───────────────────────────────────────────
 
-/// Errors from bzImage loading operations
+/// bzImage 로딩 작업 에러
 #[derive(Debug)]
 pub enum LoaderError {
     /// I/O error reading the bzImage file
@@ -115,11 +126,11 @@ const DEFAULT_CMDLINE: &[u8] = b"console=ttyS0 noapic\0";
 
 // ── Loader ───────────────────────────────────────────────
 
-/// Load a bzImage into guest memory.
-/// Returns the entry point address (typically 0x100000).
+/// bzImage를 게스트 메모리에 로드한다.
+/// 진입점 주소(일반적으로 0x100000)를 반환한다.
 ///
 /// # Safety
-/// `guest_mem` must point to a valid, writable memory region of at least `mem_size` bytes.
+/// `guest_mem`은 최소 `mem_size` 바이트의 유효한 쓰기 가능 메모리 영역을 가리켜야 한다.
 pub unsafe fn load_bzimage(
     guest_mem: *mut u8,
     mem_size: usize,
@@ -225,14 +236,14 @@ pub unsafe fn load_bzimage(
 
 // ── Command line helper ──────────────────────────────────
 
-/// Set a custom kernel command line in guest memory.
+/// 게스트 메모리에 커스텀 커널 커맨드 라인을 설정한다.
 ///
-/// Writes the command line string (null-terminated) to `CMDLINE_ADDR` and
-/// updates the `cmd_line_ptr` field in boot_params at `BOOT_PARAMS_ADDR`.
+/// `CMDLINE_ADDR`에 null 종료 문자열을 쓰고,
+/// `BOOT_PARAMS_ADDR`의 `cmd_line_ptr` 필드를 업데이트한다.
 ///
 /// # Safety
-/// `guest_mem` must point to a valid, writable memory region large enough
-/// to hold boot_params and the command line.
+/// `guest_mem`은 boot_params와 커맨드 라인을 수용할 수 있는 충분한 크기의
+/// 유효한 쓰기 가능 메모리 영역을 가리켜야 한다.
 pub unsafe fn set_cmdline(guest_mem: *mut u8, cmdline: &str) {
     // Write null-terminated command line at CMDLINE_ADDR
     let cmdline_dest = guest_mem.add(CMDLINE_ADDR);

@@ -1,7 +1,22 @@
-//! # TAP Device Interface
+//! # TAP 디바이스 인터페이스
 //!
-//! Provides a TAP device abstraction for virtio-net networking.
-//! Supports open/close, read/write, and FFI functions for Go integration.
+//! ## 목적
+//! virtio-net 네트워킹을 위한 Linux TAP 디바이스 추상화를 제공한다.
+//! `/dev/net/tun`을 통해 TAP 인터페이스를 열고, 패킷 읽기/쓰기를 지원한다.
+//!
+//! ## 아키텍처 위치
+//! ```text
+//! virtio_net → tap_device (이 모듈) → /dev/net/tun (커널 TUN/TAP 드라이버)
+//! ```
+//!
+//! ## 핵심 개념
+//! - `TUNSETIFF` ioctl로 TAP 디바이스를 설정 (`IFF_TAP | IFF_NO_PI`)
+//! - `IFF_NO_PI`: 프로토콜 정보 헤더 없이 raw 이더넷 프레임 전달
+//! - root 또는 `CAP_NET_ADMIN` 권한이 필요
+//!
+//! ## 스레드 안전성
+//! `TapDevice`는 `Send`이지만 `Sync`는 아니다. 단일 스레드에서 사용하거나
+//! 호출자가 동기화를 담당해야 한다.
 
 use std::os::unix::io::{AsRawFd, RawFd};
 
@@ -13,7 +28,7 @@ const IFF_NO_PI: libc::c_short = 0x1000;
 
 // ── Error type ───────────────────────────────────────────
 
-/// Errors from TAP device operations
+/// TAP 디바이스 작업 에러
 #[derive(Debug)]
 pub enum TapError {
     /// Failed to open /dev/net/tun
@@ -50,14 +65,17 @@ impl std::error::Error for TapError {
 
 // ── TAP Device ───────────────────────────────────────────
 
-/// A Linux TAP device handle.
+/// Linux TAP 디바이스 핸들.
+/// `Drop` 구현에서 자동으로 fd를 닫는다.
 pub struct TapDevice {
     fd: RawFd,
     name: String,
 }
 
 impl TapDevice {
-    /// Open a TAP device. If name is empty, kernel assigns one (e.g., tap0).
+    /// TAP 디바이스를 연다. name이 비어 있으면 커널이 이름을 할당한다 (예: tap0).
+    ///
+    /// root 또는 `CAP_NET_ADMIN` 권한이 필요하다.
     pub fn open(name: &str) -> Result<Self, TapError> {
         let fd = unsafe { libc::open(c"/dev/net/tun".as_ptr(), libc::O_RDWR) };
         if fd < 0 {
@@ -100,12 +118,12 @@ impl TapDevice {
         })
     }
 
-    /// Get the TAP device name.
+    /// TAP 디바이스 이름을 반환한다.
     pub fn name(&self) -> &str {
         &self.name
     }
 
-    /// Read a packet from the TAP device (non-blocking capable).
+    /// TAP 디바이스에서 패킷을 읽는다 (비차단 가능).
     pub fn read(&self, buf: &mut [u8]) -> Result<usize, TapError> {
         let n = unsafe { libc::read(self.fd, buf.as_mut_ptr() as *mut _, buf.len()) };
         if n < 0 {
@@ -114,7 +132,7 @@ impl TapDevice {
         Ok(n as usize)
     }
 
-    /// Write a packet to the TAP device.
+    /// TAP 디바이스에 패킷을 쓴다.
     pub fn write(&self, buf: &[u8]) -> Result<usize, TapError> {
         let n = unsafe { libc::write(self.fd, buf.as_ptr() as *const _, buf.len()) };
         if n < 0 {

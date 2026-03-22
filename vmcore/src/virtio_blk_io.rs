@@ -1,7 +1,11 @@
-//! # Virtio Block I/O Backend — Bridges virtio-blk with io_uring
+//! # Virtio 블록 I/O 백엔드 — virtio-blk과 io_uring을 연결
 //!
-//! Connects the virtio-blk device emulation to the io_uring async I/O engine,
-//! enabling real disk-backed block device processing through the virtio split queue.
+//! ## 목적
+//! virtio-blk 디바이스 에뮬레이션과 io_uring 비동기 I/O 엔진을 연결하여,
+//! virtio split queue를 통해 실제 디스크 백킹 블록 디바이스 처리를 가능하게 한다.
+//!
+//! ## 스레드 안전성
+//! `VirtioBlkIoBackend`는 단일 스레드에서만 사용해야 한다 (`&mut self` 요구).
 //!
 //! ## Architecture
 //! ```text
@@ -30,21 +34,25 @@ use crate::io_engine::{IoCompletion, IoEngine};
 use crate::panic_barrier::ErrorCode;
 use crate::virtio_split_queue::SplitVirtqueue;
 
-/// Virtio-blk request type constants
-pub const VIRTIO_BLK_T_IN: u32 = 0; // Read
-pub const VIRTIO_BLK_T_OUT: u32 = 1; // Write
-pub const VIRTIO_BLK_T_FLUSH: u32 = 4; // Flush
+/// Virtio-blk 요청 타입: 읽기
+pub const VIRTIO_BLK_T_IN: u32 = 0;
+/// Virtio-blk 요청 타입: 쓰기
+pub const VIRTIO_BLK_T_OUT: u32 = 1;
+/// Virtio-blk 요청 타입: 플러시(fsync)
+pub const VIRTIO_BLK_T_FLUSH: u32 = 4;
 
-/// Virtio-blk status constants
+/// Virtio-blk 상태: 성공
 pub const VIRTIO_BLK_S_OK: u8 = 0;
+/// Virtio-blk 상태: I/O 에러
 pub const VIRTIO_BLK_S_IOERR: u8 = 1;
+/// Virtio-blk 상태: 미지원 요청
 pub const VIRTIO_BLK_S_UNSUPP: u8 = 2;
 
 /// Sector size in bytes
 const SECTOR_SIZE: u64 = 512;
 
-/// Virtio-blk request header (first descriptor in chain).
-/// Matches the virtio spec layout.
+/// Virtio-blk 요청 헤더 (디스크립터 체인의 첫 번째).
+/// virtio 스펙 레이아웃과 일치한다.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct VirtioBlkRequest {
@@ -56,7 +64,7 @@ pub struct VirtioBlkRequest {
     pub sector: u64,
 }
 
-/// Backend that bridges virtio-blk descriptor chains to io_uring I/O.
+/// virtio-blk 디스크립터 체인을 io_uring I/O로 브릿지하는 백엔드.
 pub struct VirtioBlkIoBackend {
     engine: IoEngine,
     queue: SplitVirtqueue,
@@ -68,7 +76,7 @@ pub struct VirtioBlkIoBackend {
     next_user_data: u64,
 }
 
-/// Tracks an in-flight I/O request so we can push the used element on completion.
+/// 진행 중인 I/O 요청을 추적하여 완료 시 used 엘리먼트를 push할 수 있게 한다.
 struct InflightRequest {
     user_data: u64,
     head_index: u16,
@@ -77,7 +85,7 @@ struct InflightRequest {
     total_len: u32,
 }
 
-/// Opaque FFI handle
+/// FFI용 불투명 핸들
 pub struct VirtioBlkIoHandle {
     backend: VirtioBlkIoBackend,
 }

@@ -1,7 +1,21 @@
-//! # Memory Manager — Guest Physical Memory + EPT
+//! # 메모리 매니저 — 게스트 물리 메모리 + EPT
 //!
-//! Manages guest memory regions, dirty page tracking, and memory ballooning.
-//! Uses `repr(C)` for all FFI-crossing structures.
+//! ## 목적
+//! 게스트 메모리 영역 관리, dirty page 추적, 메모리 발루닝을 담당한다.
+//! FFI를 통해 Go Controller에 메모리 관리 API를 제공한다.
+//!
+//! ## 아키텍처 위치
+//! ```text
+//! Go Controller → hcv_mem_* FFI → memory_mgr (이 모듈)
+//! ```
+//!
+//! ## 핵심 개념
+//! - `MemoryRegion`: 슬롯 기반 게스트 메모리 영역 관리
+//! - dirty log: 라이브 마이그레이션용 변경 페이지 추적
+//! - `PageTableBuffer`: const generics 기반 고정 크기 페이지 테이블 버퍼
+//!
+//! ## 스레드 안전성
+//! `Mutex<HashMap>`으로 보호되는 전역 레지스트리 사용. 모든 FFI 함수는 스레드 안전.
 
 use crate::panic_barrier::ErrorCode;
 use std::collections::HashMap;
@@ -9,7 +23,10 @@ use std::sync::{Mutex, OnceLock};
 
 pub const PAGE_SIZE: usize = 4096;
 
-/// Guest memory region descriptor (FFI-safe)
+/// 게스트 메모리 영역 디스크립터 (FFI-safe).
+///
+/// 게스트 물리 주소를 호스트 사용자 공간 주소에 매핑하는 정보를 담는다.
+/// `memory_size`는 반드시 페이지 크기(4KB)의 배수여야 한다.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct MemoryRegion {
@@ -27,8 +44,9 @@ fn mem_registry() -> &'static Mutex<HashMap<SlotKey, MemoryRegion>> {
     REG.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-// ── FFI Functions ────────────────────────────────────────
+// ── FFI 함수들 ────────────────────────────────────────
 
+// FFI: Go에서 호출. 메모리 영역을 추가한다. 반환값: 0=성공, 음수=에러.
 #[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn hcv_mem_add_region(vm_handle: i32, region: *const MemoryRegion) -> i32 {
@@ -36,7 +54,7 @@ pub extern "C" fn hcv_mem_add_region(vm_handle: i32, region: *const MemoryRegion
         if region.is_null() {
             return ErrorCode::InvalidArg as i32;
         }
-        // SAFETY: caller guarantees valid pointer
+        // SAFETY: 호출자가 유효한 MemoryRegion 포인터를 보장
         let r = unsafe { *region };
         if r.memory_size == 0 || !r.memory_size.is_multiple_of(PAGE_SIZE as u64) {
             return ErrorCode::InvalidArg as i32;
@@ -60,6 +78,7 @@ pub extern "C" fn hcv_mem_add_region(vm_handle: i32, region: *const MemoryRegion
     })
 }
 
+// FFI: Go에서 호출. 메모리 영역을 제거한다. 반환값: 0=성공, 음수=에러.
 #[no_mangle]
 pub extern "C" fn hcv_mem_remove_region(vm_handle: i32, slot: u32) -> i32 {
     crate::panic_barrier::catch(|| {
@@ -77,6 +96,7 @@ pub extern "C" fn hcv_mem_remove_region(vm_handle: i32, slot: u32) -> i32 {
     })
 }
 
+// FFI: Go에서 호출. 메모리 영역 정보를 조회한다. 반환값: 0=성공, 음수=에러.
 #[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn hcv_mem_get_region(vm_handle: i32, slot: u32, out: *mut MemoryRegion) -> i32 {
@@ -101,6 +121,7 @@ pub extern "C" fn hcv_mem_get_region(vm_handle: i32, slot: u32, out: *mut Memory
     })
 }
 
+// FFI: Go에서 호출. dirty page 로깅을 활성화/비활성화한다. 반환값: 0=성공, 음수=에러.
 #[no_mangle]
 pub extern "C" fn hcv_mem_set_dirty_log(vm_handle: i32, slot: u32, enable: i32) -> i32 {
     crate::panic_barrier::catch(|| {
@@ -123,6 +144,7 @@ pub extern "C" fn hcv_mem_set_dirty_log(vm_handle: i32, slot: u32, enable: i32) 
     })
 }
 
+// FFI: Go에서 호출. dirty page 비트맵을 조회한다 (스텁: 0으로 초기화). 반환값: 0=성공.
 #[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn hcv_mem_get_dirty_log(
@@ -151,6 +173,7 @@ pub extern "C" fn hcv_mem_get_dirty_log(
     })
 }
 
+// FFI: Go에서 호출. 게스트 메모리를 mmap으로 할당한다. 반환값: 주소(i64) 또는 음수 에러.
 #[no_mangle]
 pub extern "C" fn hcv_mem_alloc_guest(size_bytes: u64) -> i64 {
     crate::panic_barrier::catch(|| {
@@ -177,6 +200,7 @@ pub extern "C" fn hcv_mem_alloc_guest(size_bytes: u64) -> i64 {
     }) as i64
 }
 
+// FFI: Go에서 호출. 게스트 메모리를 munmap으로 해제한다. 반환값: 0=성공, 음수=에러.
 #[no_mangle]
 pub extern "C" fn hcv_mem_free_guest(addr: u64, size_bytes: u64) -> i32 {
     crate::panic_barrier::catch(|| {
@@ -193,6 +217,7 @@ pub extern "C" fn hcv_mem_free_guest(addr: u64, size_bytes: u64) -> i32 {
     })
 }
 
+// FFI: Go에서 호출. 메모리 발루닝 목표를 설정한다 (스텁). 반환값: 0=성공.
 #[no_mangle]
 pub extern "C" fn hcv_mem_balloon(vm_handle: i32, target_mb: u64) -> i32 {
     crate::panic_barrier::catch(|| {
@@ -202,7 +227,9 @@ pub extern "C" fn hcv_mem_balloon(vm_handle: i32, target_mb: u64) -> i32 {
     })
 }
 
-/// Fixed-size page table buffer (Const Generics)
+/// 고정 크기 페이지 테이블 버퍼 (Const Generics 활용).
+///
+/// 힙 할당 없이 컴파일 타임에 크기가 결정되는 페이지 테이블 엔트리 버퍼.
 pub struct PageTableBuffer<const N: usize> {
     entries: [u64; N],
     count: usize,

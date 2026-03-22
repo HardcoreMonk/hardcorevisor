@@ -1,8 +1,12 @@
-//! # KVM Mini Guest Boot — x86 Real Mode Hello World
+//! # KVM 미니 게스트 부팅 — x86 리얼 모드 Hello World
 //!
-//! Boots a minimal x86 guest that writes "HCV" to port 0x3F8 (COM1 serial)
-//! using real /dev/kvm ioctl. Demonstrates the full KVM_RUN loop with
-//! I/O port exit handling.
+//! ## 목적
+//! 실제 `/dev/kvm` ioctl을 사용하여 "HCV"를 COM1 시리얼 포트(0x3F8)에
+//! 출력하는 최소 x86 게스트를 부팅한다. KVM_RUN 루프와 I/O 포트
+//! exit 처리의 완전한 데모.
+//!
+//! ## 스레드 안전성
+//! KVM fd는 스레드 안전하나, 이 모듈의 함수들은 단일 스레드에서 사용을 전제한다.
 //!
 //! ## Architecture
 //! ```text
@@ -170,16 +174,20 @@ struct KvmRunExitIo {
     data_offset: u64,
 }
 
-/// Boot result
+/// 부팅 결과
 #[derive(Debug)]
 pub struct BootResult {
+    /// 시리얼 포트에서 캡처된 출력
     pub output: String,
+    /// KVM 종료 사유 ("HLT", "SHUTDOWN", "MMIO" 등)
     pub exit_reason: &'static str,
+    /// 실행된 KVM_RUN 호출 수
     pub instructions_executed: u32,
 }
 
-/// Boot a minimal x86 guest that prints "HCV\n" via serial port.
-/// Returns the captured serial output.
+/// 시리얼 포트를 통해 "HCV\n"을 출력하는 최소 x86 게스트를 부팅한다.
+///
+/// 캡처된 시리얼 출력을 반환한다. `/dev/kvm`이 필요하다.
 pub fn boot_mini_guest() -> Result<BootResult, KvmSysError> {
     let sys = KvmSystem::open()?;
     let vm = sys.create_vm()?;
@@ -351,9 +359,9 @@ fn cleanup(
 // KVM exit reason for MMIO
 const KVM_EXIT_MMIO: u32 = 6;
 
-/// Boot a Linux kernel from a bzImage file.
-/// Captures serial output (COM1, port 0x3F8) up to `max_output` bytes.
-/// Returns the captured output and exit reason.
+/// bzImage 파일에서 Linux 커널을 부팅한다.
+/// COM1 시리얼 출력(포트 0x3F8)을 최대 `max_output` 바이트까지 캡처한다.
+/// 캡처된 출력과 종료 사유를 반환한다.
 pub fn boot_linux(
     bzimage_path: &str,
     cmdline: &str,
@@ -575,8 +583,8 @@ pub fn boot_linux(
 // FFI
 // ═══════════════════════════════════════════════════════════
 
-/// Boot a mini guest. Returns 0 on success, negative on error.
-/// Output is written to `out_buf` (null-terminated, max `buf_len` bytes).
+// FFI: Go에서 호출. 미니 게스트를 부팅한다. 반환값: 출력 바이트 수(>=0) 또는 음수 에러.
+// 출력은 `out_buf`에 null 종료 문자열로 기록된다.
 #[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn hcv_kvm_boot_mini(out_buf: *mut u8, buf_len: u32) -> i32 {
@@ -602,10 +610,9 @@ pub extern "C" fn hcv_kvm_boot_mini(out_buf: *mut u8, buf_len: u32) -> i32 {
     })
 }
 
-/// Boot a Linux kernel from a bzImage file.
-/// `bzimage_path` and `cmdline` are null-terminated C strings.
-/// Serial output is written to `out_buf` (null-terminated, max `buf_len` bytes).
-/// Returns number of bytes written on success, negative error code on failure.
+// FFI: Go에서 호출. bzImage 파일에서 Linux 커널을 부팅한다.
+// `bzimage_path`와 `cmdline`은 null 종료 C 문자열.
+// 반환값: 출력 바이트 수(>=0) 또는 음수 에러 코드.
 #[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn hcv_kvm_boot_linux(

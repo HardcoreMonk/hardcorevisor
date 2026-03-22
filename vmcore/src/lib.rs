@@ -1,6 +1,10 @@
-//! # vmcore — HardCoreVisor KVM Core Staticlib
+//! # vmcore — HardCoreVisor KVM 코어 정적 라이브러리
 //!
-//! ## Architecture
+//! ## 목적
+//! Go Controller와 CGo를 통해 링크되는 Rust 정적 라이브러리(libvmcore.a).
+//! KVM 가상화, virtio 디바이스 에뮬레이션, io_uring 비동기 I/O를 제공한다.
+//!
+//! ## 아키텍처
 //! ```text
 //! Go Controller (CGo) ──── extern "C" ────→ vmcore (Rust staticlib)
 //!                                              │
@@ -55,20 +59,20 @@ pub use panic_barrier::ErrorCode;
 pub use vcpu_mgr::{SegmentReg, VCpuRegs, VCpuSRegs, VCpuState};
 pub use virtio_blk::{VirtioBlkConfig, VirtioBlkStats};
 
-/// Library version
+/// 라이브러리 버전 (Cargo.toml에서 자동 추출)
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 // ═══════════════════════════════════════════════════════════
-// Common FFI Entry Points
+// 공통 FFI 진입점
 // ═══════════════════════════════════════════════════════════
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
+/// 초기화 상태 플래그 (AtomicBool로 멱등성 보장)
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
 
-/// Initialize the vmcore library. Must be called once before any other function.
-/// Returns 0 on success, negative error code on failure.
-/// Safe to call multiple times — second call is a no-op returning 0.
+// FFI: Go에서 호출. vmcore 라이브러리를 초기화한다. 다른 함수 호출 전에 반드시 한 번 호출.
+// 반환값: 0=성공. 여러 번 호출해도 안전 (두 번째부터 no-op으로 0 반환).
 #[no_mangle]
 pub extern "C" fn hcv_init() -> i32 {
     panic_barrier::catch(|| {
@@ -89,16 +93,16 @@ pub extern "C" fn hcv_init() -> i32 {
     })
 }
 
-/// Get the vmcore library version as a null-terminated C string.
-/// Returned pointer is static — caller must NOT free it.
+// FFI: Go에서 호출. vmcore 버전을 null 종료 C 문자열로 반환한다.
+// 반환값: 정적 포인터 — 호출자가 해제하면 안 됨.
 #[no_mangle]
 pub extern "C" fn hcv_version() -> *const libc::c_char {
     static VERSION_CSTR: &[u8] = concat!(env!("CARGO_PKG_VERSION"), "\0").as_bytes();
     VERSION_CSTR.as_ptr() as *const libc::c_char
 }
 
-/// Shutdown the vmcore library. Cleans up global state.
-/// Returns 0 on success.
+// FFI: Go에서 호출. vmcore 라이브러리를 종료하고 전역 상태를 정리한다.
+// 반환값: 0=성공.
 #[no_mangle]
 pub extern "C" fn hcv_shutdown() -> i32 {
     panic_barrier::catch(|| {

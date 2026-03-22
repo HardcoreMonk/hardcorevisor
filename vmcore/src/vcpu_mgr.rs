@@ -1,7 +1,22 @@
-//! # vCPU Manager — Typestate Pattern + FFI Wrappers
+//! # vCPU 매니저 — Typestate 패턴 + FFI 래퍼
 //!
-//! Rust-internal: compile-time state enforcement via `VCpu<S>`.
-//! FFI boundary: runtime state validation via `VCpuState` enum.
+//! ## 목적
+//! vCPU의 생명주기를 관리한다. Rust 내부에서는 컴파일 타임 Typestate 패턴으로
+//! 잘못된 상태 전이를 방지하고, FFI 경계에서는 런타임 `VCpuState` 열거형으로 검증한다.
+//!
+//! ## 아키텍처 위치
+//! ```text
+//! Go Controller → hcv_vcpu_* FFI → vcpu_mgr (런타임 상태 검증)
+//! Rust 내부      → VCpu<S>       (컴파일 타임 상태 강제)
+//! ```
+//!
+//! ## 핵심 개념
+//! - Typestate: `VCpu<TCreated>` → `VCpu<TConfigured>` → `VCpu<TRunning>` ⇄ `VCpu<TPaused>`
+//! - 제로 크기 마커 타입으로 상태를 인코딩하여 잘못된 전이는 컴파일 에러 발생
+//! - FFI: `VCpuEntry`에 `VCpuState` 필드로 동적 상태 검증 수행
+//!
+//! ## 스레드 안전성
+//! 전역 vCPU 레지스트리는 `Mutex<HashMap>`으로 보호된다.
 
 use crate::panic_barrier::ErrorCode;
 use std::collections::HashMap;
@@ -12,7 +27,7 @@ use std::sync::{Mutex, OnceLock};
 // FFI-safe types (repr(C))
 // ═══════════════════════════════════════════════════════════
 
-/// vCPU state for FFI runtime validation
+/// FFI 런타임 검증용 vCPU 상태 열거형
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VCpuState {
@@ -22,7 +37,7 @@ pub enum VCpuState {
     Paused = 3,
 }
 
-/// General-purpose registers (x86-64)
+/// x86-64 범용 레지스터 (FFI-safe)
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct VCpuRegs {
@@ -46,7 +61,7 @@ pub struct VCpuRegs {
     pub rflags: u64,
 }
 
-/// Segment register
+/// x86 세그먼트 레지스터 (FFI-safe)
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SegmentReg {
@@ -63,7 +78,7 @@ pub struct SegmentReg {
     pub _pad: u8,
 }
 
-/// Special registers
+/// x86 특수 레지스터 (제어 레지스터, 세그먼트 등, FFI-safe)
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct VCpuSRegs {
@@ -81,20 +96,28 @@ pub struct VCpuSRegs {
 }
 
 // ═══════════════════════════════════════════════════════════
-// Typestate (Rust-internal only — not exposed via FFI)
+// Typestate (Rust 내부 전용 — FFI로 노출하지 않음)
 // ═══════════════════════════════════════════════════════════
 
+/// Typestate 마커 트레이트 — 상태를 타입 파라미터로 인코딩
 pub trait TypestateMarker {}
+/// 생성 상태 마커
 pub enum TCreated {}
+/// 설정 완료 상태 마커
 pub enum TConfigured {}
+/// 실행 중 상태 마커
 pub enum TRunning {}
+/// 일시 중지 상태 마커
 pub enum TPaused {}
 impl TypestateMarker for TCreated {}
 impl TypestateMarker for TConfigured {}
 impl TypestateMarker for TRunning {}
 impl TypestateMarker for TPaused {}
 
-/// Compile-time state-tracked vCPU (Rust-internal use)
+/// 컴파일 타임 상태 추적 vCPU (Rust 내부 전용).
+///
+/// 상태 전이 시 `self`를 소비하고 새로운 타입의 `VCpu`를 반환하므로,
+/// 잘못된 상태 전이는 컴파일 에러를 발생시킨다.
 pub struct VCpu<S: TypestateMarker> {
     pub id: u32,
     pub vm_handle: i32,
@@ -157,7 +180,7 @@ impl<S: TypestateMarker> VCpu<S> {
 }
 
 // ═══════════════════════════════════════════════════════════
-// Runtime vCPU Registry (for FFI)
+// 런타임 vCPU 레지스트리 (FFI용 동적 상태 검증)
 // ═══════════════════════════════════════════════════════════
 
 #[derive(Debug)]
@@ -190,9 +213,10 @@ where
 }
 
 // ═══════════════════════════════════════════════════════════
-// FFI Functions
+// FFI 함수들
 // ═══════════════════════════════════════════════════════════
 
+// FFI: Go에서 호출. vCPU를 생성한다. 반환값: 0=성공, 음수=에러.
 #[no_mangle]
 pub extern "C" fn hcv_vcpu_create(vm_handle: i32, vcpu_id: u32) -> i32 {
     crate::panic_barrier::catch(|| {
@@ -219,6 +243,7 @@ pub extern "C" fn hcv_vcpu_create(vm_handle: i32, vcpu_id: u32) -> i32 {
     })
 }
 
+// FFI: Go에서 호출. vCPU를 설정한다 (Created → Configured). 반환값: 0=성공, 음수=에러.
 #[no_mangle]
 pub extern "C" fn hcv_vcpu_configure(vm_handle: i32, vcpu_id: u32) -> i32 {
     crate::panic_barrier::catch(|| {
@@ -234,6 +259,7 @@ pub extern "C" fn hcv_vcpu_configure(vm_handle: i32, vcpu_id: u32) -> i32 {
     })
 }
 
+// FFI: Go에서 호출. 범용 레지스터를 설정한다. 반환값: 0=성공, 음수=에러.
 #[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn hcv_vcpu_set_regs(vm_handle: i32, vcpu_id: u32, regs: *const VCpuRegs) -> i32 {
@@ -251,6 +277,7 @@ pub extern "C" fn hcv_vcpu_set_regs(vm_handle: i32, vcpu_id: u32, regs: *const V
     })
 }
 
+// FFI: Go에서 호출. 특수 레지스터를 설정한다. 반환값: 0=성공, 음수=에러.
 #[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn hcv_vcpu_set_sregs(vm_handle: i32, vcpu_id: u32, sregs: *const VCpuSRegs) -> i32 {
@@ -267,6 +294,7 @@ pub extern "C" fn hcv_vcpu_set_sregs(vm_handle: i32, vcpu_id: u32, sregs: *const
     })
 }
 
+// FFI: Go에서 호출. vCPU를 시작한다 (Configured → Running). 반환값: 0=성공, 음수=에러.
 #[no_mangle]
 pub extern "C" fn hcv_vcpu_start(vm_handle: i32, vcpu_id: u32) -> i32 {
     crate::panic_barrier::catch(|| {
@@ -282,6 +310,7 @@ pub extern "C" fn hcv_vcpu_start(vm_handle: i32, vcpu_id: u32) -> i32 {
     })
 }
 
+// FFI: Go에서 호출. vCPU를 일시 중지한다 (Running → Paused). 반환값: 0=성공, 음수=에러.
 #[no_mangle]
 pub extern "C" fn hcv_vcpu_pause(vm_handle: i32, vcpu_id: u32) -> i32 {
     crate::panic_barrier::catch(|| {
@@ -296,6 +325,7 @@ pub extern "C" fn hcv_vcpu_pause(vm_handle: i32, vcpu_id: u32) -> i32 {
     })
 }
 
+// FFI: Go에서 호출. vCPU를 재개한다 (Paused → Running). 반환값: 0=성공, 음수=에러.
 #[no_mangle]
 pub extern "C" fn hcv_vcpu_resume(vm_handle: i32, vcpu_id: u32) -> i32 {
     crate::panic_barrier::catch(|| {
@@ -310,6 +340,7 @@ pub extern "C" fn hcv_vcpu_resume(vm_handle: i32, vcpu_id: u32) -> i32 {
     })
 }
 
+// FFI: Go에서 호출. 인터럽트를 주입한다 (Running 상태에서만). 반환값: 0=성공, 음수=에러.
 #[no_mangle]
 pub extern "C" fn hcv_vcpu_inject_irq(vm_handle: i32, vcpu_id: u32, irq: u32) -> i32 {
     crate::panic_barrier::catch(|| {
@@ -324,6 +355,7 @@ pub extern "C" fn hcv_vcpu_inject_irq(vm_handle: i32, vcpu_id: u32, irq: u32) ->
     })
 }
 
+// FFI: Go에서 호출. vCPU 상태를 VCpuState 값(0~3)으로 반환. 실패 시 음수 에러 코드.
 #[no_mangle]
 pub extern "C" fn hcv_vcpu_get_state(vm_handle: i32, vcpu_id: u32) -> i32 {
     crate::panic_barrier::catch(|| {
@@ -331,6 +363,7 @@ pub extern "C" fn hcv_vcpu_get_state(vm_handle: i32, vcpu_id: u32) -> i32 {
     })
 }
 
+// FFI: Go에서 호출. vCPU를 파괴한다. 반환값: 0=성공, 음수=에러.
 #[no_mangle]
 pub extern "C" fn hcv_vcpu_destroy(vm_handle: i32, vcpu_id: u32) -> i32 {
     crate::panic_barrier::catch(|| {
