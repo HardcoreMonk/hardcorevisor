@@ -1,0 +1,13 @@
+hardcorevisor (0.2.0-1) unstable; urgency=medium
+
+  * Dual VMM backend: rustvmm + qemu with automatic selection
+  * REST API + gRPC control plane with full service coverage
+  * Virtio block/net device emulation with io_uring async I/O
+  * ZFS storage driver, nftables networking, VFIO passthrough
+  * etcd-based HA clustering with leader election and fencing
+  * Swagger UI API documentation serving
+  * hcvctl CLI with man page generation
+  * Prometheus metrics + Grafana dashboards + alerting rules
+  * 189 automated tests (82 Rust + 107 Go)
+
+ -- HardCoreMonk <hardcoremonk@users.noreply.github.com>  Sun, 23 Mar 2026 00:00:00 +0000

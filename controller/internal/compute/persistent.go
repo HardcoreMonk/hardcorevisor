@@ -127,6 +127,16 @@ func (p *PersistentComputeService) MigrateVM(handle int32, targetNode string) er
 	return nil
 }
 
+// MigrateLive delegates to the inner service for async migration.
+func (p *PersistentComputeService) MigrateLive(handle int32, targetNode string) error {
+	return p.inner.MigrateLive(handle, targetNode)
+}
+
+// CancelMigration delegates to the inner service.
+func (p *PersistentComputeService) CancelMigration(handle int32) error {
+	return p.inner.CancelMigration(handle)
+}
+
 // LoadFromStore — 저장소에서 영속화된 모든 VM을 읽어 인메모리로 복원한다.
 // Controller 시작 시 1회 호출된다. 개별 VM 복원 실패는 로그로 기록하고 건너뛴다.
 //

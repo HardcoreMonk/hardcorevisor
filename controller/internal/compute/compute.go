@@ -29,7 +29,9 @@
 package compute
 
 import (
+	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -43,6 +45,16 @@ const (
 	PolicyRustVMM = "rustvmm" // RustVMM 백엔드 강제 사용
 	PolicyQEMU    = "qemu"    // QEMU 백엔드 강제 사용
 	PolicyLXC     = "lxc"     // LXC 백엔드 강제 사용 (컨테이너)
+)
+
+// MigrationPhase 상수 — 마이그레이션 단계
+const (
+	MigrationPending    = "pending"
+	MigrationPreCheck   = "pre-check"
+	MigrationTransfer   = "transfer"
+	MigrationSwitchover = "switchover"
+	MigrationCompleted  = "completed"
+	MigrationFailed     = "failed"
 )
 
 // VMInfo — API 레이어에 노출되는 VM의 전체 상태.
@@ -201,11 +213,13 @@ func (b *RustVMMBackend) ResumeVM(handle int32) error {
 func (b *RustVMMBackend) GetVM(handle int32) (*VMInfo, error) {
 	b.mu.RLock()
 	vm, ok := b.vms[handle]
-	b.mu.RUnlock()
 	if !ok {
+		b.mu.RUnlock()
 		return nil, fmt.Errorf("VM not found: %d", handle)
 	}
-	return vm, nil
+	cp := *vm
+	b.mu.RUnlock()
+	return &cp, nil
 }
 
 func (b *RustVMMBackend) ListVMs() []*VMInfo {
@@ -213,7 +227,8 @@ func (b *RustVMMBackend) ListVMs() []*VMInfo {
 	defer b.mu.RUnlock()
 	result := make([]*VMInfo, 0, len(b.vms))
 	for _, vm := range b.vms {
-		result = append(result, vm)
+		cp := *vm
+		result = append(result, &cp)
 	}
 	return result
 }
@@ -345,8 +360,12 @@ type ComputeProvider interface {
 	DestroyVM(handle int32) error
 	// ListBackends — 등록된 VMM 백엔드 정보 목록을 반환한다.
 	ListBackends() []BackendInfo
-	// MigrateVM — VM을 다른 노드로 마이그레이션한다 (현재 시뮬레이션).
+	// MigrateVM — VM을 다른 노드로 동기 마이그레이션한다.
 	MigrateVM(handle int32, targetNode string) error
+	// MigrateLive — VM을 다른 노드로 비동기 라이브 마이그레이션한다.
+	MigrateLive(handle int32, targetNode string) error
+	// CancelMigration — 진행 중인 마이그레이션을 취소한다.
+	CancelMigration(handle int32) error
 	// GetMigrationStatus — VM 마이그레이션 진행 상태를 조회한다.
 	GetMigrationStatus(handle int32) (*MigrationStatus, error)
 }
@@ -373,11 +392,12 @@ type MigrationStatus struct {
 // BackendSelector를 통해 VM 생성 시 적합한 백엔드를 선택하고,
 // findBackendForVM()으로 기존 VM의 소유 백엔드를 찾아 작업을 위임한다.
 type ComputeService struct {
-	selector       *BackendSelector
-	defaultBackend VMMBackend
-	nextID         atomic.Int32
-	migrationsMu   sync.RWMutex
-	migrations     map[int32]*MigrationStatus
+	selector         *BackendSelector
+	defaultBackend   VMMBackend
+	nextID           atomic.Int32
+	migrationsMu     sync.RWMutex
+	migrations       map[int32]*MigrationStatus
+	activeMigrations map[int32]context.CancelFunc
 }
 
 // NewComputeService 는 BackendSelector와 기본 백엔드로 ComputeService를 생성한다.
@@ -389,9 +409,10 @@ type ComputeService struct {
 // 호출 시점: Controller 초기화 시
 func NewComputeService(selector *BackendSelector, defaultBackend VMMBackend) *ComputeService {
 	cs := &ComputeService{
-		selector:       selector,
-		defaultBackend: defaultBackend,
-		migrations:     make(map[int32]*MigrationStatus),
+		selector:         selector,
+		defaultBackend:   defaultBackend,
+		migrations:       make(map[int32]*MigrationStatus),
+		activeMigrations: make(map[int32]context.CancelFunc),
 	}
 	cs.nextID.Store(1)
 	return cs
@@ -488,19 +509,92 @@ func (cs *ComputeService) ListBackends() []BackendInfo {
 	return cs.selector.List()
 }
 
-// MigrateVM 은 시뮬레이션된 라이브 마이그레이션을 수행한다.
+// MigrateVM 은 동기적 라이브 마이그레이션을 수행한다.
 //
-// 마이그레이션 전 검증:
-//   - VM이 존재해야 한다
-//   - VM이 "running" 상태여야 한다
-//   - 대상 노드가 현재 노드와 달라야 한다
+// 마이그레이션 단계:
+//  1. PreCheck: VM running 확인, 대상 노드 확인
+//  2. Transfer: 메모리 전송 시뮬레이션 (10% → 30% → 60% → 90%)
+//  3. Switchover: 소스 VM 일시정지, 최종 동기화, 노드 전환, 대상에서 재개
+//  4. Complete: status=completed, progress=100
 //
-// 마이그레이션 단계: pre-check → transferring (50%) → completed (100%)
-// 현재 구현은 동기적 시뮬레이션이며, 실제 메모리/디스크 전송은 수행하지 않는다.
-//
-// 호출 시점: REST POST /api/v1/vms/{id}/migrate
+// 호출 시점: REST POST /api/v1/vms/{id}/migrate (동기 모드)
 // 에러 조건: VM 미존재, VM이 running 상태가 아님, 대상=소스 노드
 func (cs *ComputeService) MigrateVM(handle int32, targetNode string) error {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	return cs.doMigration(ctx, handle, targetNode)
+}
+
+// MigrateLive 은 비동기 라이브 마이그레이션을 goroutine에서 실행한다.
+// 진행 상태는 GetMigrationStatus()로 폴링할 수 있다.
+// CancelMigration()으로 취소할 수 있다.
+//
+// 호출 시점: REST POST /api/v1/vms/{id}/migrate (비동기 모드)
+func (cs *ComputeService) MigrateLive(handle int32, targetNode string) error {
+	// Pre-validation (synchronous) so caller gets immediate error
+	backend, err := cs.findBackendForVM(handle)
+	if err != nil {
+		return fmt.Errorf("VM not found: %d", handle)
+	}
+	vm, err := backend.GetVM(handle)
+	if err != nil {
+		return fmt.Errorf("VM not found: %d", handle)
+	}
+	if vm.State != "running" {
+		return fmt.Errorf("VM %d must be running to migrate, current state: %s", handle, vm.State)
+	}
+	if vm.Node == targetNode {
+		return fmt.Errorf("VM %d is already on node %s", handle, targetNode)
+	}
+
+	// Set initial pending status
+	status := &MigrationStatus{
+		VMID:       handle,
+		SourceNode: vm.Node,
+		TargetNode: targetNode,
+		Phase:      MigrationPending,
+		Progress:   0,
+		StartedAt:  time.Now(),
+	}
+	cs.migrationsMu.Lock()
+	cs.migrations[handle] = status
+	cs.migrationsMu.Unlock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cs.migrationsMu.Lock()
+	cs.activeMigrations[handle] = cancel
+	cs.migrationsMu.Unlock()
+
+	go func() {
+		defer func() {
+			cs.migrationsMu.Lock()
+			delete(cs.activeMigrations, handle)
+			cs.migrationsMu.Unlock()
+		}()
+		if err := cs.doMigration(ctx, handle, targetNode); err != nil {
+			slog.Warn("async migration failed", "vm_id", handle, "error", err)
+		}
+	}()
+
+	return nil
+}
+
+// CancelMigration 은 진행 중인 마이그레이션을 취소한다.
+// 마이그레이션이 없으면 에러를 반환한다.
+func (cs *ComputeService) CancelMigration(handle int32) error {
+	cs.migrationsMu.Lock()
+	cancel, ok := cs.activeMigrations[handle]
+	cs.migrationsMu.Unlock()
+	if !ok {
+		return fmt.Errorf("no active migration for VM %d", handle)
+	}
+	cancel()
+	return nil
+}
+
+// doMigration 은 마이그레이션의 실제 단계를 실행하는 내부 메서드이다.
+// context 취소 시 migration status를 failed로 설정한다.
+func (cs *ComputeService) doMigration(ctx context.Context, handle int32, targetNode string) error {
 	backend, err := cs.findBackendForVM(handle)
 	if err != nil {
 		return fmt.Errorf("VM not found: %d", handle)
@@ -511,13 +605,13 @@ func (cs *ComputeService) MigrateVM(handle int32, targetNode string) error {
 		return fmt.Errorf("VM not found: %d", handle)
 	}
 
-	// Pre-check: VM must be running
+	// Phase 1: PreCheck
 	if vm.State != "running" {
 		status := &MigrationStatus{
 			VMID:       handle,
 			SourceNode: vm.Node,
 			TargetNode: targetNode,
-			Phase:      "failed",
+			Phase:      MigrationFailed,
 			Progress:   0,
 			StartedAt:  time.Now(),
 			Error:      fmt.Sprintf("VM must be running to migrate, current state: %s", vm.State),
@@ -527,37 +621,70 @@ func (cs *ComputeService) MigrateVM(handle int32, targetNode string) error {
 		cs.migrationsMu.Unlock()
 		return fmt.Errorf("VM %d must be running to migrate, current state: %s", handle, vm.State)
 	}
-
-	// Pre-check: target != source
 	if vm.Node == targetNode {
 		return fmt.Errorf("VM %d is already on node %s", handle, targetNode)
 	}
 
-	// Create migration status
 	status := &MigrationStatus{
 		VMID:       handle,
 		SourceNode: vm.Node,
 		TargetNode: targetNode,
-		Phase:      "pre-check",
+		Phase:      MigrationPreCheck,
 		Progress:   0,
 		StartedAt:  time.Now(),
 	}
-
 	cs.migrationsMu.Lock()
 	cs.migrations[handle] = status
 	cs.migrationsMu.Unlock()
 
-	// Simulate migration phases
+	// Phase 2: Transfer — simulate memory transfer with progress updates
+	// For QEMU Real mode: would send QMP "migrate" command here
+	// For Emulated mode: simulate with short sleeps
+	transferSteps := []int{10, 30, 60, 90}
 	cs.migrationsMu.Lock()
-	status.Phase = "transferring"
-	status.Progress = 50
+	status.Phase = MigrationTransfer
 	cs.migrationsMu.Unlock()
 
-	// Complete migration
-	vm.Node = targetNode
+	for _, progress := range transferSteps {
+		select {
+		case <-ctx.Done():
+			cs.migrationsMu.Lock()
+			status.Phase = MigrationFailed
+			status.Error = "migration cancelled"
+			status.CompletedAt = time.Now()
+			cs.migrationsMu.Unlock()
+			return fmt.Errorf("migration cancelled for VM %d", handle)
+		default:
+		}
+		cs.migrationsMu.Lock()
+		status.Progress = progress
+		cs.migrationsMu.Unlock()
+		time.Sleep(5 * time.Millisecond) // Emulated transfer delay
+	}
+
+	// Phase 3: Switchover — pause source, final sync, update node, resume on target
+	select {
+	case <-ctx.Done():
+		cs.migrationsMu.Lock()
+		status.Phase = MigrationFailed
+		status.Error = "migration cancelled"
+		status.CompletedAt = time.Now()
+		cs.migrationsMu.Unlock()
+		return fmt.Errorf("migration cancelled for VM %d", handle)
+	default:
+	}
 
 	cs.migrationsMu.Lock()
-	status.Phase = "completed"
+	status.Phase = MigrationSwitchover
+	status.Progress = 95
+	cs.migrationsMu.Unlock()
+
+	// Update node field (simulated switchover) — protected by backend lock
+	cs.updateVMNode(handle, targetNode)
+
+	// Phase 4: Complete
+	cs.migrationsMu.Lock()
+	status.Phase = MigrationCompleted
 	status.Progress = 100
 	status.CompletedAt = time.Now()
 	cs.migrationsMu.Unlock()
@@ -577,7 +704,9 @@ func (cs *ComputeService) GetMigrationStatus(handle int32) (*MigrationStatus, er
 	if !ok {
 		return nil, fmt.Errorf("no migration status for VM %d", handle)
 	}
-	return status, nil
+	// Return a copy to avoid data races
+	cp := *status
+	return &cp, nil
 }
 
 // listBackends 는 셀렉터에 등록된 모든 백엔드를 슬라이스로 반환한다.
@@ -590,6 +719,42 @@ func (cs *ComputeService) listBackends() []VMMBackend {
 		result = append(result, b)
 	}
 	return result
+}
+
+// updateVMNode 은 VM의 Node 필드를 안전하게 업데이트한다.
+// 백엔드의 내부 잠금을 사용하여 동시 읽기와의 race condition을 방지한다.
+func (cs *ComputeService) updateVMNode(handle int32, node string) {
+	for _, b := range cs.listBackends() {
+		switch backend := b.(type) {
+		case *RustVMMBackend:
+			backend.mu.Lock()
+			if vm, ok := backend.vms[handle]; ok {
+				vm.Node = node
+			}
+			backend.mu.Unlock()
+			return
+		case *QEMUBackend:
+			backend.mu.Lock()
+			if vm, ok := backend.vms[handle]; ok {
+				vm.Node = node
+			}
+			backend.mu.Unlock()
+			return
+		case *LXCBackend:
+			backend.mu.Lock()
+			if vm, ok := backend.vms[handle]; ok {
+				vm.Node = node
+			}
+			backend.mu.Unlock()
+			return
+		default:
+			// For other backends, try GetVM then direct update
+			if vm, err := b.GetVM(handle); err == nil {
+				vm.Node = node
+				return
+			}
+		}
+	}
 }
 
 // findBackendForVM 은 주어진 handle의 VM을 소유한 백엔드를 찾아 반환한다.

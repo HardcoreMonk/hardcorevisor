@@ -1,0 +1,20 @@
+[Unit]
+Description=HardCoreVisor Controller
+Documentation=https://github.com/HardcoreMonk/hardcorevisor
+After=network.target etcd.service
+Wants=etcd.service
+
+[Service]
+Type=simple
+User=hcv
+Group=hcv
+ExecStart=/usr/bin/hcv-controller
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+Environment=HCV_LOG_FORMAT=json
+Environment=HCV_LOG_LEVEL=info
+WorkingDirectory=/var/lib/hardcorevisor
+
+[Install]
+WantedBy=multi-user.target

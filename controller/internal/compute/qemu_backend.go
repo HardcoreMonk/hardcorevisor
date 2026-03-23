@@ -185,7 +185,8 @@ func (b *QEMUBackend) GetVM(handle int32) (*VMInfo, error) {
 	if !ok {
 		return nil, fmt.Errorf("VM not found: %d", handle)
 	}
-	return vm, nil
+	cp := *vm
+	return &cp, nil
 }
 
 func (b *QEMUBackend) ListVMs() []*VMInfo {

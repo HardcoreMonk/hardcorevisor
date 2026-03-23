@@ -42,6 +42,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/cobra/doc"
 	"gopkg.in/yaml.v3"
 )
 
@@ -511,7 +512,47 @@ To load fish completions:
 	}
 	containerCmd.AddCommand(ctExecCmd)
 
-	root.AddCommand(vmCmd, nodeCmd, versionCmd, storageCmd, networkCmd, deviceCmd, clusterCmd, completionCmd, backupCmd, statusCmd, shellCmd, templateCmd, imageCmd, snapshotCmd, loginCmd, containerCmd)
+	// ── gendoc subcommand — 문서 자동 생성 (man pages, markdown) ──
+	gendocCmd := &cobra.Command{
+		Use:    "gendoc",
+		Short:  "Generate documentation (man pages or markdown)",
+		Long:   "Generate man pages or markdown documentation from CLI command tree.",
+		Hidden: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			docType, _ := cmd.Flags().GetString("type")
+			outDir, _ := cmd.Flags().GetString("dir")
+			if outDir == "" {
+				outDir = "docs/man"
+			}
+			if err := os.MkdirAll(outDir, 0o755); err != nil {
+				return fmt.Errorf("failed to create output directory: %w", err)
+			}
+			switch docType {
+			case "man":
+				header := &doc.GenManHeader{
+					Title:   "HCVCTL",
+					Section: "1",
+					Source:  "HardCoreVisor",
+				}
+				if err := doc.GenManTree(root, header, outDir); err != nil {
+					return fmt.Errorf("failed to generate man pages: %w", err)
+				}
+				fmt.Printf("Man pages generated in %s/\n", outDir)
+			case "markdown":
+				if err := doc.GenMarkdownTree(root, outDir); err != nil {
+					return fmt.Errorf("failed to generate markdown docs: %w", err)
+				}
+				fmt.Printf("Markdown docs generated in %s/\n", outDir)
+			default:
+				return fmt.Errorf("unsupported doc type: %s (use 'man' or 'markdown')", docType)
+			}
+			return nil
+		},
+	}
+	gendocCmd.Flags().String("type", "man", "Documentation type: man or markdown")
+	gendocCmd.Flags().String("dir", "", "Output directory (default: docs/man)")
+
+	root.AddCommand(vmCmd, nodeCmd, versionCmd, storageCmd, networkCmd, deviceCmd, clusterCmd, completionCmd, backupCmd, statusCmd, shellCmd, templateCmd, imageCmd, snapshotCmd, loginCmd, containerCmd, gendocCmd)
 
 	if err := root.Execute(); err != nil {
 		os.Exit(1)

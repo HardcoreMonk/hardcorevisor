@@ -43,6 +43,7 @@ import (
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/peripheral"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/snapshot"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/storage"
+	"github.com/HardcoreMonk/hardcorevisor/controller/internal/task"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/template"
 	"github.com/HardcoreMonk/hardcorevisor/controller/pkg/ffi"
 )
@@ -88,6 +89,7 @@ type Services struct {
 	Snapshot   *snapshot.Service
 	Image      *image.Service
 	LXC        *compute.LXCBackend
+	Task       *task.TaskService
 	Auth       *AuthServices
 	HAServices *HAServices
 	Version    VersionInfo
@@ -135,9 +137,18 @@ func NewRouter(svc *Services, rbacUsers ...map[string]auth.RBACUser) http.Handle
 		mux.HandleFunc("POST /api/v1/vms/{id}/resume", svc.handleVMAction("resume"))
 		mux.HandleFunc("POST /api/v1/vms/{id}/migrate", svc.handleMigrateVM)
 		mux.HandleFunc("GET /api/v1/vms/{id}/migration", svc.handleGetMigrationStatus)
+		mux.HandleFunc("DELETE /api/v1/vms/{id}/migration", svc.handleCancelMigration)
 		mux.HandleFunc("GET /api/v1/vms/{id}/stats", svc.handleVMStats)
 		mux.HandleFunc("POST /api/v1/vms/{id}/exec", svc.handleContainerExec)
 		mux.HandleFunc("GET /api/v1/nodes", handleListNodes)
+		mux.HandleFunc("GET /api/v1/nodes/{id}", svc.handleGetNode)
+
+		// Tasks
+		if svc.Task != nil {
+			mux.HandleFunc("GET /api/v1/tasks", svc.handleListTasks)
+			mux.HandleFunc("GET /api/v1/tasks/{id}", svc.handleGetTask)
+			mux.HandleFunc("DELETE /api/v1/tasks/{id}", svc.handleDeleteTask)
+		}
 		mux.HandleFunc("GET /api/v1/backends", svc.handleListBackends)
 		mux.HandleFunc("GET /api/v1/templates/lxc", svc.handleLXCTemplates)
 
@@ -229,6 +240,10 @@ func NewRouter(svc *Services, rbacUsers ...map[string]auth.RBACUser) http.Handle
 			mux.HandleFunc("DELETE /api/v1/auth/users/{username}", svc.handleAuthDeleteUser)
 		}
 	}
+
+	// Swagger UI (available in both live and stub modes, no auth required)
+	mux.HandleFunc("GET /api/v1/docs", handleSwaggerUI)
+	mux.HandleFunc("GET /api/v1/docs/openapi.yaml", handleOpenAPISpec)
 
 	// Metrics endpoint (available in both live and stub modes)
 	metricsHandler := promhttp.Handler()
@@ -545,6 +560,43 @@ func (svc *Services) handleMigrateVM(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "target_node is required"})
 		return
 	}
+
+	// When TaskService is available, use async migration with task tracking
+	if svc.Task != nil {
+		if err := svc.Compute.MigrateLive(handle, req.TargetNode); err != nil {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+			return
+		}
+		t := svc.Task.CreateTask("vm.migrate", handle)
+		// Track migration progress in a goroutine
+		go func() {
+			t.SetStatus("running")
+			for {
+				time.Sleep(10 * time.Millisecond)
+				ms, err := svc.Compute.GetMigrationStatus(handle)
+				if err != nil {
+					break
+				}
+				t.SetProgress(ms.Progress)
+				if ms.Phase == "completed" {
+					t.Complete()
+					break
+				} else if ms.Phase == "failed" {
+					t.Fail(ms.Error)
+					break
+				}
+			}
+		}()
+		snap := t.Snapshot()
+		writeJSON(w, http.StatusAccepted, map[string]any{
+			"task_id": snap.ID,
+			"status":  "pending",
+			"message": fmt.Sprintf("VM %d migration to %s initiated", handle, req.TargetNode),
+		})
+		return
+	}
+
+	// Fallback: synchronous migration (no task service)
 	if err := svc.Compute.MigrateVM(handle, req.TargetNode); err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 		return
@@ -552,6 +604,23 @@ func (svc *Services) handleMigrateVM(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{
 		"status":  "migrated",
 		"message": fmt.Sprintf("VM %d migrated to %s", handle, req.TargetNode),
+	})
+}
+
+// handleCancelMigration — 진행 중인 마이그레이션을 취소한다 (DELETE /api/v1/vms/{id}/migration).
+func (svc *Services) handleCancelMigration(w http.ResponseWriter, r *http.Request) {
+	handle, err := parseVMID(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, ErrCodeBadRequest, err.Error())
+		return
+	}
+	if err := svc.Compute.CancelMigration(handle); err != nil {
+		writeError(w, http.StatusNotFound, ErrCodeNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"status":  "cancelled",
+		"message": fmt.Sprintf("Migration for VM %d cancelled", handle),
 	})
 }
 
@@ -742,6 +811,62 @@ func handleListNodes(w http.ResponseWriter, _ *http.Request) {
 		{Name: "node-03", Status: "online", CPUPercent: 78.3, MemoryPercent: 81.0, VMCount: 0},
 	}
 	writeJSON(w, http.StatusOK, nodes)
+}
+
+// handleGetNode — 이름으로 특정 노드를 조회한다 (GET /api/v1/nodes/{id}).
+func (svc *Services) handleGetNode(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("id")
+	if name == "" {
+		writeError(w, http.StatusBadRequest, ErrCodeBadRequest, "node name is required")
+		return
+	}
+	if svc.HA == nil {
+		writeError(w, http.StatusNotFound, ErrCodeNotFound, "HA service not available")
+		return
+	}
+	node, err := svc.HA.GetNode(name)
+	if err != nil {
+		writeError(w, http.StatusNotFound, ErrCodeNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, node)
+}
+
+// ── Task Handlers ───────────────────────────────────
+
+// handleListTasks — 태스크 목록을 조회한다 (GET /api/v1/tasks).
+func (svc *Services) handleListTasks(w http.ResponseWriter, r *http.Request) {
+	typeFilter := r.URL.Query().Get("type")
+	statusFilter := r.URL.Query().Get("status")
+	tasks := svc.Task.ListTasks(typeFilter, statusFilter)
+	// Return snapshots to avoid race conditions during JSON serialization
+	result := make([]task.TaskSnapshot, 0, len(tasks))
+	for _, t := range tasks {
+		result = append(result, t.Snapshot())
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// handleGetTask — ID로 태스크를 조회한다 (GET /api/v1/tasks/{id}).
+func (svc *Services) handleGetTask(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	t, err := svc.Task.GetTask(id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, ErrCodeNotFound, err.Error())
+		return
+	}
+	snap := t.Snapshot()
+	writeJSON(w, http.StatusOK, &snap)
+}
+
+// handleDeleteTask — 완료/실패 태스크를 삭제한다 (DELETE /api/v1/tasks/{id}).
+func (svc *Services) handleDeleteTask(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := svc.Task.DeleteTask(id); err != nil {
+		writeError(w, http.StatusBadRequest, ErrCodeBadRequest, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // ── Storage Handlers ─────────────────────────────────

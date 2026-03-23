@@ -1,0 +1,23 @@
+Source: hardcorevisor
+Section: admin
+Priority: optional
+Maintainer: HardCoreMonk <hardcoremonk@users.noreply.github.com>
+Build-Depends: debhelper-compat (= 13), rustc, cargo, golang-go
+Standards-Version: 4.6.2
+Homepage: https://github.com/HardcoreMonk/hardcorevisor
+
+Package: hardcorevisor
+Architecture: amd64
+Depends: ${shlibs:Depends}, ${misc:Depends}, qemu-system-x86 (>= 8.0), zfsutils-linux
+Recommends: etcd-server, prometheus, grafana
+Description: Hybrid virtualization platform with Dual VMM
+ HardCoreVisor combines Rust KVM core with Go orchestration.
+ Supports QEMU and rust-vmm backends with automatic
+ workload-based backend selection. Features include:
+ .
+  - Dual VMM: QEMU (Windows/GPU) + rust-vmm (Linux microVM)
+  - REST API + gRPC control plane
+  - Virtio block/net device emulation with io_uring
+  - ZFS storage, nftables networking, VFIO passthrough
+  - etcd-based HA clustering with leader election
+  - Prometheus metrics + Grafana dashboards

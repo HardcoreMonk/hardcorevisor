@@ -22,6 +22,7 @@ import (
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/peripheral"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/snapshot"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/storage"
+	"github.com/HardcoreMonk/hardcorevisor/controller/internal/task"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/template"
 	"github.com/HardcoreMonk/hardcorevisor/controller/pkg/ffi"
 )
@@ -56,6 +57,7 @@ func setupE2E(t *testing.T) (*httptest.Server, func()) {
 		Snapshot:   snapshot.NewService(),
 		Image:      image.NewService("/tmp/hcv-images"),
 		LXC:        lxcBackend,
+		Task:       task.NewTaskService(),
 		Version: api.VersionInfo{
 			Version:   "test-e2e",
 			GitCommit: "abc123",
@@ -588,10 +590,19 @@ func TestE2E_VMMigration(t *testing.T) {
 	// Start VM
 	httpPost(t, base+"/api/v1/vms/"+id+"/start", nil)
 
-	// Migrate to node-02
+	// Migrate to node-02 (async with task)
 	body, _ := json.Marshal(map[string]any{"target_node": "node-02"})
 	resp := httpPostRaw(t, base+"/api/v1/vms/"+id+"/migrate", body)
-	assertStatus(t, resp, 200)
+	assertStatus(t, resp, 202)
+
+	var migrateResp map[string]any
+	decodeJSON(t, resp, &migrateResp)
+	if migrateResp["task_id"] == nil {
+		t.Fatal("expected task_id in response")
+	}
+
+	// Wait for async migration to complete
+	time.Sleep(200 * time.Millisecond)
 
 	// Verify node changed
 	resp = httpGet(t, base+"/api/v1/vms/"+id)
@@ -1103,10 +1114,13 @@ func TestE2E_MigrationStatus(t *testing.T) {
 	resp := httpGet(t, base+"/api/v1/vms/"+id+"/migration")
 	assertStatus(t, resp, 404)
 
-	// Migrate VM
+	// Migrate VM (async with task)
 	body, _ := json.Marshal(map[string]any{"target_node": "node-05"})
 	resp = httpPostRaw(t, base+"/api/v1/vms/"+id+"/migrate", body)
-	assertStatus(t, resp, 200)
+	assertStatus(t, resp, 202)
+
+	// Wait for async migration to complete
+	time.Sleep(200 * time.Millisecond)
 
 	// Check migration status after migration
 	resp = httpGet(t, base+"/api/v1/vms/"+id+"/migration")
@@ -1495,4 +1509,219 @@ func TestE2E_ContainerExec(t *testing.T) {
 	assertStatus(t, resp, 204)
 	resp = httpDelete(t, base+"/api/v1/vms/"+vmID)
 	assertStatus(t, resp, 204)
+}
+
+// ── E2E: Live Migration with Async Task ──────────────────
+
+func TestE2E_LiveMigration(t *testing.T) {
+	srv, cleanup := setupE2E(t)
+	defer cleanup()
+	base := srv.URL
+
+	// Create and start VM
+	vm := createVM(t, base, map[string]any{"name": "live-mig-vm", "vcpus": 2, "memory_mb": 4096})
+	id := fmt.Sprintf("%.0f", vm["id"].(float64))
+	httpPost(t, base+"/api/v1/vms/"+id+"/start", nil)
+
+	// Trigger async migration
+	body, _ := json.Marshal(map[string]any{"target_node": "node-02"})
+	resp := httpPostRaw(t, base+"/api/v1/vms/"+id+"/migrate", body)
+	assertStatus(t, resp, 202)
+
+	var migrateResp map[string]any
+	decodeJSON(t, resp, &migrateResp)
+	taskID := migrateResp["task_id"].(string)
+	if taskID == "" {
+		t.Fatal("expected non-empty task_id")
+	}
+
+	// Poll task status until completed (with timeout)
+	deadline := time.Now().Add(5 * time.Second)
+	var taskStatus string
+	for time.Now().Before(deadline) {
+		resp = httpGet(t, base+"/api/v1/tasks/"+taskID)
+		assertStatus(t, resp, 200)
+		var taskDetail map[string]any
+		decodeJSON(t, resp, &taskDetail)
+		taskStatus = taskDetail["status"].(string)
+		if taskStatus == "completed" || taskStatus == "failed" {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	assertEqual(t, taskStatus, "completed")
+
+	// Verify task progress reached 100
+	resp = httpGet(t, base+"/api/v1/tasks/"+taskID)
+	assertStatus(t, resp, 200)
+	var finalTask map[string]any
+	decodeJSON(t, resp, &finalTask)
+	progress := int(finalTask["progress"].(float64))
+	if progress != 100 {
+		t.Fatalf("expected progress 100, got %d", progress)
+	}
+
+	// Verify VM node changed
+	resp = httpGet(t, base+"/api/v1/vms/"+id)
+	assertStatus(t, resp, 200)
+	var vmDetail map[string]any
+	decodeJSON(t, resp, &vmDetail)
+	assertEqual(t, vmDetail["node"].(string), "node-02")
+
+	// Verify migration status
+	resp = httpGet(t, base+"/api/v1/vms/"+id+"/migration")
+	assertStatus(t, resp, 200)
+	var migStatus map[string]any
+	decodeJSON(t, resp, &migStatus)
+	assertEqual(t, migStatus["phase"].(string), "completed")
+
+	httpDelete(t, base+"/api/v1/vms/"+id)
+}
+
+// ── E2E: Cancel Migration ────────────────────────────────
+
+func TestE2E_CancelMigration(t *testing.T) {
+	srv, cleanup := setupE2E(t)
+	defer cleanup()
+	base := srv.URL
+
+	// Create and start VM
+	vm := createVM(t, base, map[string]any{"name": "cancel-mig-vm", "vcpus": 2, "memory_mb": 4096})
+	id := fmt.Sprintf("%.0f", vm["id"].(float64))
+	httpPost(t, base+"/api/v1/vms/"+id+"/start", nil)
+
+	// Cancel migration on VM with no active migration should fail
+	req, _ := http.NewRequest("DELETE", base+"/api/v1/vms/"+id+"/migration", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("DELETE migration: %v", err)
+	}
+	assertStatus(t, resp, 404)
+
+	httpDelete(t, base+"/api/v1/vms/"+id)
+}
+
+// ── E2E: Async Task API ─────────────────────────────────
+
+func TestE2E_AsyncTaskAPI(t *testing.T) {
+	srv, cleanup := setupE2E(t)
+	defer cleanup()
+	base := srv.URL
+
+	// 1. Initially no tasks
+	resp := httpGet(t, base+"/api/v1/tasks")
+	assertStatus(t, resp, 200)
+	var tasks []map[string]any
+	decodeJSON(t, resp, &tasks)
+	if len(tasks) != 0 {
+		t.Fatalf("expected 0 tasks initially, got %d", len(tasks))
+	}
+
+	// 2. Create VM, start it, trigger migrate (creates task)
+	vm := createVM(t, base, map[string]any{"name": "task-test-vm", "vcpus": 2, "memory_mb": 4096})
+	id := fmt.Sprintf("%.0f", vm["id"].(float64))
+	httpPost(t, base+"/api/v1/vms/"+id+"/start", nil)
+
+	body, _ := json.Marshal(map[string]any{"target_node": "node-02"})
+	resp = httpPostRaw(t, base+"/api/v1/vms/"+id+"/migrate", body)
+	assertStatus(t, resp, 202)
+
+	var migrateResp map[string]any
+	decodeJSON(t, resp, &migrateResp)
+	taskID := migrateResp["task_id"].(string)
+
+	// 3. Get task by ID
+	resp = httpGet(t, base+"/api/v1/tasks/"+taskID)
+	assertStatus(t, resp, 200)
+	var taskDetail map[string]any
+	decodeJSON(t, resp, &taskDetail)
+	assertEqual(t, taskDetail["type"].(string), "vm.migrate")
+
+	// 4. Wait for completion
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		resp = httpGet(t, base+"/api/v1/tasks/"+taskID)
+		assertStatus(t, resp, 200)
+		decodeJSON(t, resp, &taskDetail)
+		if taskDetail["status"].(string) == "completed" {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	assertEqual(t, taskDetail["status"].(string), "completed")
+
+	// 5. List tasks with type filter
+	resp = httpGet(t, base+"/api/v1/tasks?type=vm.migrate")
+	assertStatus(t, resp, 200)
+	decodeJSON(t, resp, &tasks)
+	if len(tasks) < 1 {
+		t.Fatal("expected at least 1 task with type vm.migrate")
+	}
+
+	// 6. List tasks with status filter
+	resp = httpGet(t, base+"/api/v1/tasks?status=completed")
+	assertStatus(t, resp, 200)
+	decodeJSON(t, resp, &tasks)
+	if len(tasks) < 1 {
+		t.Fatal("expected at least 1 completed task")
+	}
+
+	// 7. Delete completed task
+	req, _ := http.NewRequest("DELETE", base+"/api/v1/tasks/"+taskID, nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("DELETE task: %v", err)
+	}
+	assertStatus(t, resp, 204)
+
+	// 8. Verify task deleted
+	resp = httpGet(t, base+"/api/v1/tasks/"+taskID)
+	assertStatus(t, resp, 404)
+
+	// 9. Get non-existent task
+	resp = httpGet(t, base+"/api/v1/tasks/task-nonexistent")
+	assertStatus(t, resp, 404)
+
+	httpDelete(t, base+"/api/v1/vms/"+id)
+}
+
+// ── E2E: Node Detail API ─────────────────────────────────
+
+func TestE2E_NodeDetail(t *testing.T) {
+	srv, cleanup := setupE2E(t)
+	defer cleanup()
+	base := srv.URL
+
+	// 1. Get known node by name
+	resp := httpGet(t, base+"/api/v1/nodes/node-01")
+	assertStatus(t, resp, 200)
+	var node map[string]any
+	decodeJSON(t, resp, &node)
+	assertEqual(t, node["name"].(string), "node-01")
+	assertEqual(t, node["status"].(string), "online")
+	if _, ok := node["vm_count"]; !ok {
+		t.Fatal("expected vm_count field")
+	}
+	if _, ok := node["is_leader"]; !ok {
+		t.Fatal("expected is_leader field")
+	}
+
+	// 2. Get another known node
+	resp = httpGet(t, base+"/api/v1/nodes/node-02")
+	assertStatus(t, resp, 200)
+	decodeJSON(t, resp, &node)
+	assertEqual(t, node["name"].(string), "node-02")
+
+	// 3. Get unknown node — 404
+	resp = httpGet(t, base+"/api/v1/nodes/node-unknown")
+	assertStatus(t, resp, 404)
+
+	// 4. Verify node list still works
+	resp = httpGet(t, base+"/api/v1/nodes")
+	assertStatus(t, resp, 200)
+	var nodes []map[string]any
+	decodeJSON(t, resp, &nodes)
+	if len(nodes) < 3 {
+		t.Fatalf("expected at least 3 nodes, got %d", len(nodes))
+	}
 }

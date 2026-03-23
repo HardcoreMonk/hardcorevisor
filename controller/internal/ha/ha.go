@@ -121,6 +121,14 @@ func (s *Service) ListNodes() []*ClusterNode {
 	return nodes
 }
 
+// GetNode 는 이름으로 특정 클러스터 노드를 조회한다.
+//
+// 호출 시점: REST GET /api/v1/nodes/{id}
+// 에러 조건: 노드 미존재 (404)
+func (s *Service) GetNode(name string) (*ClusterNode, error) {
+	return s.driver.GetNode(name)
+}
+
 // FenceNode 은 지정된 노드에 대해 펜싱 작업을 시작한다.
 //
 // 호출 시점: REST POST /api/v1/cluster/fence/{node}

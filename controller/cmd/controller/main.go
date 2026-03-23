@@ -50,6 +50,7 @@ import (
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/image"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/logging"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/network"
+	"github.com/HardcoreMonk/hardcorevisor/controller/internal/task"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/peripheral"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/storage"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/store"
@@ -190,6 +191,7 @@ func main() {
 		}
 	}
 	backupSvc := backup.NewService(storageSvc)
+	taskSvc := task.NewTaskService()
 
 	// ── JWT Auth + UserDB 초기화 (Phase 17) ──
 	// UserDB: bbolt 기반 사용자 DB (bcrypt 해시 비밀번호 저장)
@@ -226,6 +228,7 @@ func main() {
 		Backup:     backupSvc,
 		Image:      imageSvc,
 		LXC:        lxcBackend,
+		Task:       taskSvc,
 		Auth:       authServices,
 		EventHub:   eventHub,
 		Version: api.VersionInfo{

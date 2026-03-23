@@ -98,7 +98,7 @@ func RBACMiddleware(users map[string]RBACUser, cfgs ...*RBACConfig) func(http.Ha
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Skip auth for healthz, metrics, and auth login
-			if r.URL.Path == "/healthz" || r.URL.Path == "/metrics" || r.URL.Path == "/api/v1/auth/login" {
+			if r.URL.Path == "/healthz" || r.URL.Path == "/metrics" || r.URL.Path == "/api/v1/auth/login" || strings.HasPrefix(r.URL.Path, "/api/v1/docs") {
 				next.ServeHTTP(w, r)
 				return
 			}

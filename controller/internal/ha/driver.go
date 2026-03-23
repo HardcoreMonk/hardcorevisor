@@ -25,6 +25,11 @@ type HADriver interface {
 	// 멱등성: 읽기 전용
 	ListNodes() ([]*ClusterNode, error)
 
+	// GetNode 는 이름으로 특정 클러스터 노드를 조회한다.
+	// 멱등성: 읽기 전용
+	// 에러 조건: 노드 미존재
+	GetNode(name string) (*ClusterNode, error)
+
 	// FenceNode 는 지정된 노드에 펜싱을 수행한다.
 	// 멱등성: 아님 — 노드 상태를 "fenced"로 변경하고 이벤트를 기록
 	// 부작용: 노드 상태 변경, EtcdDriver는 etcd에 영속화

@@ -93,6 +93,19 @@ func (d *MemoryDriver) ListNodes() ([]*ClusterNode, error) {
 	return result, nil
 }
 
+// GetNode 는 이름으로 특정 클러스터 노드를 조회한다.
+// 에러 조건: 노드 미존재
+func (d *MemoryDriver) GetNode(name string) (*ClusterNode, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	node, ok := d.nodes[name]
+	if !ok {
+		return nil, fmt.Errorf("node not found: %s", name)
+	}
+	cp := *node
+	return &cp, nil
+}
+
 // FenceNode 은 지정된 노드에 펜싱을 수행한다.
 // 노드 상태를 NodeFenced로 변경하고 펜싱 이벤트를 기록한다.
 // 에러 조건: 노드 미존재

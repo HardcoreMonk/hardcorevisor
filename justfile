@@ -277,6 +277,19 @@ release-tag version:
     git tag -a v{{version}} -m "Release v{{version}}"
     @echo "Tagged v{{version}}. Push with: git push origin v{{version}}"
 
+# Generate man pages from hcvctl CLI
+man-pages:
+    cd controller && go run ./cmd/hcvctl gendoc --type man --dir ../docs/man
+
+# Generate markdown docs from hcvctl CLI
+cli-docs:
+    cd controller && go run ./cmd/hcvctl gendoc --type markdown --dir ../docs/cli
+
+# Build .deb package
+deb:
+    chmod +x scripts/build-deb.sh
+    ./scripts/build-deb.sh
+
 # Build release binaries
 release-build: rust-release go-controller go-hcvctl
     @echo "Release binaries:"

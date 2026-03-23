@@ -1,0 +1,20 @@
+#!/usr/bin/make -f
+%:
+	dh $@
+
+override_dh_auto_build:
+	cd hardcorevisor && cargo build -p vmcore --release
+	cd hardcorevisor/controller && go build -ldflags="-s -w" -o ../target/hcv-controller ./cmd/controller
+	cd hardcorevisor/controller && go build -ldflags="-s -w" -o ../target/hcvctl ./cmd/hcvctl
+
+override_dh_auto_install:
+	install -D -m 755 hardcorevisor/target/release/libvmcore.a $(CURDIR)/debian/hardcorevisor/usr/lib/hardcorevisor/libvmcore.a
+	install -D -m 755 hardcorevisor/target/hcv-controller $(CURDIR)/debian/hardcorevisor/usr/bin/hcv-controller
+	install -D -m 755 hardcorevisor/target/hcvctl $(CURDIR)/debian/hardcorevisor/usr/bin/hcvctl
+	install -D -m 644 hardcorevisor/hcv.example.yaml $(CURDIR)/debian/hardcorevisor/etc/hardcorevisor/hcv.yaml
+	install -D -m 644 hardcorevisor/deploy/prometheus.yml $(CURDIR)/debian/hardcorevisor/etc/hardcorevisor/prometheus.yml
+	install -D -m 644 hardcorevisor/deploy/alert-rules.yml $(CURDIR)/debian/hardcorevisor/etc/hardcorevisor/alert-rules.yml
+	install -D -m 644 hardcorevisor/docs/openapi.yaml $(CURDIR)/debian/hardcorevisor/usr/share/hardcorevisor/openapi.yaml
+
+override_dh_auto_test:
+	@echo "Skipping tests during package build"
