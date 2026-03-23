@@ -280,6 +280,78 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /api/v1/vms/{id}/exec:
+    post:
+      tags: [compute]
+      summary: Execute a command in a container
+      description: Only works for LXC containers (type=container). Container must be running.
+      operationId: execContainer
+      parameters:
+        - $ref: "#/components/parameters/vmId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [command]
+              properties:
+                command:
+                  type: array
+                  items:
+                    type: string
+                  example: ["ls", "-la"]
+      responses:
+        "200":
+          description: Command output
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  output:
+                    type: string
+        "400":
+          description: Not a container or empty command
+        "409":
+          description: Container not running
+
+  /api/v1/vms/{id}/stats:
+    get:
+      tags: [compute]
+      summary: Get VM/container resource statistics
+      operationId: getVMStats
+      parameters:
+        - $ref: "#/components/parameters/vmId"
+      responses:
+        "200":
+          description: Resource statistics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContainerStats"
+        "404":
+          description: VM not found
+
+  /api/v1/templates/lxc:
+    get:
+      tags: [compute]
+      summary: List available LXC distribution templates
+      operationId: listLXCTemplates
+      responses:
+        "200":
+          description: Template list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  templates:
+                    type: array
+                    items:
+                      type: string
+                    example: ["ubuntu", "alpine", "debian", "centos"]
+
   # ── Backends ───────────────────────────────────────────
   /api/v1/backends:
     get:
@@ -773,10 +845,47 @@ components:
           type: string
         backend:
           type: string
-          enum: [rustvmm, qemu]
+          enum: [rustvmm, qemu, lxc]
+        type:
+          type: string
+          enum: [vm, container]
+          description: Workload type (vm or container)
+        template:
+          type: string
+          description: LXC template name (for containers)
+        rootfs:
+          type: string
+          description: Root filesystem path (for containers)
+        ip_address:
+          type: string
+          description: Container IP address
+        arch:
+          type: string
+          description: Architecture (e.g., amd64)
         created_at:
           type: string
           format: date-time
+
+    ContainerStats:
+      type: object
+      properties:
+        cpu_usage_ns:
+          type: integer
+          format: int64
+        memory_usage_bytes:
+          type: integer
+          format: int64
+        memory_limit_bytes:
+          type: integer
+          format: int64
+        pid_count:
+          type: integer
+        net_rx_bytes:
+          type: integer
+          format: int64
+        net_tx_bytes:
+          type: integer
+          format: int64
 
     CreateVMRequest:
       type: object
@@ -794,17 +903,26 @@ components:
           description: Memory in MiB (defaults to 512)
         backend:
           type: string
-          enum: [rustvmm, qemu]
+          enum: [rustvmm, qemu, lxc]
           description: >
             VMM backend to use. If omitted, BackendSelector chooses
             automatically based on workload characteristics.
+            For containers, use "lxc" or set type to "container".
+        type:
+          type: string
+          enum: [vm, container]
+          description: >
+            Workload type. "container" auto-selects the lxc backend.
+        template:
+          type: string
+          description: LXC template name (e.g., ubuntu, alpine). Used when type=container.
 
     BackendInfo:
       type: object
       properties:
         name:
           type: string
-          enum: [rustvmm, qemu]
+          enum: [rustvmm, qemu, lxc]
         status:
           type: string
         vm_count:

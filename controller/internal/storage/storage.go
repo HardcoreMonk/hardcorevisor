@@ -258,6 +258,79 @@ func (s *Service) CreateSnapshot(volumeID, name string) (*Snapshot, error) {
 	return snap, nil
 }
 
+// RollbackSnapshot 은 스냅샷을 롤백한다 (볼륨을 스냅샷 시점으로 되돌림).
+//
+// 호출 시점: REST POST /api/v1/storage/snapshots/{id}/rollback
+// 동시 호출 안전성: 드라이버에 위임 (드라이버가 보장)
+func (s *Service) RollbackSnapshot(id string) error {
+	if _, ok := s.driver.(*MemoryDriver); !ok {
+		return s.driver.RollbackSnapshot(id)
+	}
+
+	s.mu.RLock()
+	snap, ok := s.snapshots[id]
+	s.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("snapshot not found: %s", id)
+	}
+	_ = snap
+	return nil
+}
+
+// CloneSnapshot 은 스냅샷에서 새 볼륨을 복제한다.
+//
+// 호출 시점: REST POST /api/v1/storage/snapshots/{id}/clone
+// 동시 호출 안전성: 안전 (Lock으로 보호)
+func (s *Service) CloneSnapshot(id, newName string) (*Volume, error) {
+	if _, ok := s.driver.(*MemoryDriver); !ok {
+		return s.driver.CloneSnapshot(id, newName)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	snap, ok := s.snapshots[id]
+	if !ok {
+		return nil, fmt.Errorf("snapshot not found: %s", id)
+	}
+	srcVol, ok := s.volumes[snap.VolumeID]
+	if !ok {
+		return nil, fmt.Errorf("source volume not found: %s", snap.VolumeID)
+	}
+	volID := fmt.Sprintf("vol-%d", s.nextVolID.Add(1)-1)
+	vol := &Volume{
+		ID:        volID,
+		Pool:      srcVol.Pool,
+		Name:      newName,
+		SizeBytes: srcVol.SizeBytes,
+		Format:    srcVol.Format,
+		Path:      fmt.Sprintf("/dev/%s/%s", srcVol.Pool, newName),
+		CreatedAt: time.Now().Unix(),
+	}
+	s.volumes[volID] = vol
+	if p, ok := s.pools[srcVol.Pool]; ok {
+		p.UsedBytes += vol.SizeBytes
+	}
+	return vol, nil
+}
+
+// DeleteSnapshot 은 스냅샷을 삭제한다.
+//
+// 호출 시점: REST DELETE /api/v1/storage/snapshots/{id}
+// 동시 호출 안전성: 안전 (Lock으로 보호)
+func (s *Service) DeleteSnapshot(id string) error {
+	if _, ok := s.driver.(*MemoryDriver); !ok {
+		return s.driver.DeleteSnapshot(id)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.snapshots[id]; !ok {
+		return fmt.Errorf("snapshot not found: %s", id)
+	}
+	delete(s.snapshots, id)
+	return nil
+}
+
 // ListSnapshots 는 스냅샷 목록을 반환하며, volumeID로 필터링이 가능하다.
 //
 // 하는 일: volumeID가 빈 문자열이면 전체 반환, 아니면 해당 볼륨의 스냅샷만 반환.

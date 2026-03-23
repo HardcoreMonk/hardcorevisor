@@ -141,3 +141,58 @@ func (d *MemoryDriver) ListSnapshots(volumeID string) ([]*Snapshot, error) {
 	}
 	return result, nil
 }
+
+// RollbackSnapshot 은 인메모리에서 스냅샷 롤백을 시뮬레이션한다.
+// 스냅샷 존재 여부만 확인하고 성공을 반환한다 (인메모리이므로 실제 데이터 변경 없음).
+// 동시 호출 안전성: 안전 (RLock 사용)
+func (d *MemoryDriver) RollbackSnapshot(snapshotID string) error {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	if _, ok := d.snapshots[snapshotID]; !ok {
+		return fmt.Errorf("snapshot not found: %s", snapshotID)
+	}
+	return nil
+}
+
+// CloneSnapshot 은 스냅샷 메타데이터를 기반으로 새 볼륨을 생성한다.
+// 동시 호출 안전성: 안전 (Lock 사용, ID는 atomic 카운터)
+func (d *MemoryDriver) CloneSnapshot(snapshotID, newVolumeName string) (*Volume, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	snap, ok := d.snapshots[snapshotID]
+	if !ok {
+		return nil, fmt.Errorf("snapshot not found: %s", snapshotID)
+	}
+	srcVol, ok := d.volumes[snap.VolumeID]
+	if !ok {
+		return nil, fmt.Errorf("source volume not found: %s", snap.VolumeID)
+	}
+	id := fmt.Sprintf("vol-%d", d.nextVolID.Add(1)-1)
+	vol := &Volume{
+		ID:        id,
+		Pool:      srcVol.Pool,
+		Name:      newVolumeName,
+		SizeBytes: srcVol.SizeBytes,
+		Format:    srcVol.Format,
+		Path:      fmt.Sprintf("/dev/%s/%s", srcVol.Pool, newVolumeName),
+		CreatedAt: time.Now().Unix(),
+	}
+	d.volumes[id] = vol
+	if p, ok := d.pools[srcVol.Pool]; ok {
+		p.UsedBytes += vol.SizeBytes
+	}
+	return vol, nil
+}
+
+// DeleteSnapshot 은 인메모리에서 스냅샷을 삭제한다.
+// 스냅샷 미존재 시 에러 반환.
+// 동시 호출 안전성: 안전 (Lock 사용)
+func (d *MemoryDriver) DeleteSnapshot(snapshotID string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if _, ok := d.snapshots[snapshotID]; !ok {
+		return fmt.Errorf("snapshot not found: %s", snapshotID)
+	}
+	delete(d.snapshots, snapshotID)
+	return nil
+}

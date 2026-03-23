@@ -87,13 +87,27 @@ pub struct CreateFormState {
     pub vcpus: String,
     /// 메모리 크기 MB (기본값: "4096")
     pub memory_mb: String,
-    /// VMM 백엔드: "rustvmm" 또는 "qemu" (기본값: "rustvmm")
+    /// VMM 백엔드: "rustvmm", "qemu", 또는 "lxc" (기본값: "rustvmm")
+    ///
+    /// type이 "container"이면 백엔드 값에 관계없이 lxc가 자동 선택된다.
     pub backend: String,
-    /// 현재 포커스된 필드 인덱스 (0=name, 1=vcpus, 2=memory, 3=backend)
+    /// 워크로드 타입: "vm" 또는 "container" (기본값: "vm", Phase 16 추가)
+    ///
+    /// "container"를 선택하면 create_container() API를 호출하여
+    /// LXC 백엔드로 컨테이너를 생성한다.
+    /// "vm"이면 기존 create_vm() API를 호출한다.
+    pub workload_type: String,
+    /// 현재 포커스된 필드 인덱스 (0=name, 1=vcpus, 2=memory, 3=backend, 4=type)
     pub focused_field: usize,
     /// 유효성 검사 또는 API 에러 메시지
     pub error: Option<String>,
 }
+
+/// 폼 필드 수 (Phase 16에서 4→5로 변경: name, vcpus, memory, backend, type)
+///
+/// type 필드가 추가되어 VM과 컨테이너 생성을 동일 폼에서 처리할 수 있다.
+/// Tab/Shift+Tab으로 필드 간 이동 시 이 상수로 모듈러 연산한다.
+const FORM_FIELD_COUNT: usize = 5;
 
 impl CreateFormState {
     /// 기본값으로 새 폼 상태를 생성한다.
@@ -103,6 +117,7 @@ impl CreateFormState {
             vcpus: "2".to_string(),
             memory_mb: "4096".to_string(),
             backend: "rustvmm".to_string(),
+            workload_type: "vm".to_string(),
             focused_field: 0,
             error: None,
         }
@@ -525,10 +540,12 @@ impl App {
                 self.show_create_form = false;
             }
             KeyCode::Tab | KeyCode::Down => {
-                self.create_form.focused_field = (self.create_form.focused_field + 1) % 4;
+                self.create_form.focused_field =
+                    (self.create_form.focused_field + 1) % FORM_FIELD_COUNT;
             }
             KeyCode::BackTab | KeyCode::Up => {
-                self.create_form.focused_field = (self.create_form.focused_field + 3) % 4;
+                self.create_form.focused_field =
+                    (self.create_form.focused_field + FORM_FIELD_COUNT - 1) % FORM_FIELD_COUNT;
             }
             KeyCode::Enter => {
                 self.submit_create_form().await;
@@ -563,6 +580,7 @@ impl App {
             1 => &mut self.create_form.vcpus,
             2 => &mut self.create_form.memory_mb,
             3 => &mut self.create_form.backend,
+            4 => &mut self.create_form.workload_type,
             _ => &mut self.create_form.name,
         }
     }
@@ -598,7 +616,19 @@ impl App {
             }
         };
 
-        match self.client.create_vm(&name, vcpus, memory_mb).await {
+        // Phase 16: workload_type에 따라 VM 또는 컨테이너 생성 API를 분기한다.
+        // "container" → create_container() (type=container, 기본 템플릿 "ubuntu")
+        // "vm"       → create_vm() (기존 VM 생성)
+        let is_container = self.create_form.workload_type.trim() == "container";
+        let result = if is_container {
+            self.client
+                .create_container(&name, vcpus, memory_mb, "ubuntu")
+                .await
+        } else {
+            self.client.create_vm(&name, vcpus, memory_mb).await
+        };
+
+        match result {
             Ok(_) => {
                 self.tick().await;
                 self.show_create_form = false;

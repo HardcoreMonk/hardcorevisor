@@ -155,3 +155,26 @@ func (d *MemoryDriver) DeleteFirewallRule(id string) error {
 	delete(d.rules, id)
 	return nil
 }
+
+// CreateZone 은 인메모리에 SDN 존을 생성한다. 이름 중복 시 에러 반환.
+func (d *MemoryDriver) CreateZone(zone *Zone) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if _, ok := d.zones[zone.Name]; ok {
+		return fmt.Errorf("zone already exists: %s", zone.Name)
+	}
+	zone.Status = "active"
+	d.zones[zone.Name] = zone
+	return nil
+}
+
+// DeleteZone 은 인메모리에서 SDN 존을 삭제한다. 미존재 시 에러 반환.
+func (d *MemoryDriver) DeleteZone(name string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if _, ok := d.zones[name]; !ok {
+		return fmt.Errorf("zone not found: %s", name)
+	}
+	delete(d.zones, name)
+	return nil
+}

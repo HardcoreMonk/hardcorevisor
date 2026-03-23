@@ -43,4 +43,22 @@ type StorageDriver interface {
 	// 멱등성: 읽기 전용, 부작용 없음
 	// 에러 조건: CLI 실행 실패
 	ListSnapshots(volumeID string) ([]*Snapshot, error)
+
+	// RollbackSnapshot 은 스냅샷을 롤백한다 (볼륨을 스냅샷 시점으로 되돌림).
+	// 멱등성: 아님 — 볼륨 데이터가 스냅샷 시점으로 변경됨
+	// 부작용: ZFS는 "zfs rollback" 실행
+	// 에러 조건: 스냅샷 미존재, CLI 실행 실패
+	RollbackSnapshot(snapshotID string) error
+
+	// CloneSnapshot 은 스냅샷에서 새 볼륨을 복제한다.
+	// 멱등성: 아님 — 호출할 때마다 새 볼륨 생성
+	// 부작용: ZFS는 "zfs clone" 실행
+	// 에러 조건: 스냅샷 미존재, CLI 실행 실패
+	CloneSnapshot(snapshotID, newVolumeName string) (*Volume, error)
+
+	// DeleteSnapshot 은 스냅샷을 삭제한다.
+	// 멱등성: 아님 — 이미 삭제된 스냅샷에 대해 에러 반환
+	// 부작용: ZFS는 "zfs destroy" 실행
+	// 에러 조건: 스냅샷 미존재, CLI 실행 실패
+	DeleteSnapshot(snapshotID string) error
 }

@@ -70,6 +70,9 @@ func QMPDial(socketPath string, timeout time.Duration) (*QMPClient, error) {
 	return client, nil
 }
 
+// readGreeting 은 QMP 연결 직후 QEMU가 보내는 인사말 메시지를 읽어 버린다.
+// 인사말은 JSON 형식의 버전/기능 정보를 포함하지만, 현재는 파싱하지 않는다.
+// 타임아웃: 5초
 func (c *QMPClient) readGreeting() error {
 	buf := make([]byte, 4096)
 	c.conn.SetReadDeadline(time.Now().Add(5 * time.Second))
@@ -114,6 +117,51 @@ func (c *QMPClient) Execute(command string, args map[string]any) error {
 		return fmt.Errorf("QMP error: %s: %s", resp.Error.Class, resp.Error.Desc)
 	}
 	return nil
+}
+
+// QueryStatus — QEMU의 현재 실행 상태를 조회한다.
+//
+// QMP 명령: {"execute": "query-status"}
+// 응답에서 "status" 필드를 추출하여 반환한다 (예: "running", "paused", "prelaunch").
+//
+// # 반환값
+//   - string: QEMU 실행 상태 ("running", "paused", "prelaunch" 등)
+//   - error: QMP 통신 에러 또는 응답 파싱 에러
+func (c *QMPClient) QueryStatus() (string, error) {
+	cmd := map[string]any{"execute": "query-status"}
+	data, _ := json.Marshal(cmd)
+	data = append(data, '\n')
+
+	c.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	if _, err := c.conn.Write(data); err != nil {
+		return "", fmt.Errorf("QMP write query-status: %w", err)
+	}
+
+	c.conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	buf := make([]byte, 65536)
+	n, err := c.conn.Read(buf)
+	if err != nil {
+		return "", fmt.Errorf("QMP read query-status: %w", err)
+	}
+
+	var resp struct {
+		Return *struct {
+			Status  string `json:"status"`
+			Running bool   `json:"running"`
+		} `json:"return,omitempty"`
+		Error *QMPError `json:"error,omitempty"`
+	}
+	if err := json.Unmarshal(buf[:n], &resp); err != nil {
+		return "", fmt.Errorf("QMP parse query-status: %w", err)
+	}
+	if resp.Error != nil {
+		return "", fmt.Errorf("QMP query-status error: %s: %s", resp.Error.Class, resp.Error.Desc)
+	}
+	if resp.Return == nil {
+		return "", fmt.Errorf("QMP query-status: empty return")
+	}
+
+	return resp.Return.Status, nil
 }
 
 // Close — QMP 연결을 닫는다.

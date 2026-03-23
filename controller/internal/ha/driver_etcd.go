@@ -22,9 +22,10 @@ import (
 // MemoryDriver를 임베딩하여 기본 동작을 위임받고,
 // etcd에 노드 상태와 펜싱 이벤트를 영속화한다.
 type EtcdDriver struct {
-	MemoryDriver // embed for base behavior
-	store        store.Store
-	nodeName     string
+	MemoryDriver                    // embed for base behavior
+	store          store.Store
+	nodeName       string
+	leaderElection *LeaderElection
 }
 
 // NewEtcdDriver 는 etcd 기반 HA 드라이버를 생성한다.
@@ -141,4 +142,44 @@ func (d *EtcdDriver) FenceNode(nodeName, reason, action string) (*FenceEvent, er
 	})
 
 	return event, nil
+}
+
+// IsLeader 는 LeaderElection이 설정된 경우 위임하고,
+// 그렇지 않으면 true를 반환한다 (단일 노드 폴백).
+func (d *EtcdDriver) IsLeader() bool {
+	d.mu.RLock()
+	le := d.leaderElection
+	d.mu.RUnlock()
+	if le != nil {
+		return le.IsLeader()
+	}
+	return true
+}
+
+// GetLeader 는 LeaderElection이 설정된 경우 위임하고,
+// 그렇지 않으면 현재 노드 이름을 반환한다.
+func (d *EtcdDriver) GetLeader() (string, error) {
+	d.mu.RLock()
+	le := d.leaderElection
+	d.mu.RUnlock()
+	if le != nil {
+		return le.GetLeader()
+	}
+	return d.nodeName, nil
+}
+
+// WatchNodes 는 etcd에서 "ha/nodes/" 접두사를 감시하고 콜백을 호출한다.
+// etcd 접근 불가 시 no-op으로 동작한다.
+func (d *EtcdDriver) WatchNodes(ctx context.Context, callback func(nodeName, status string)) error {
+	// In current implementation, delegate to memory driver's no-op watcher
+	// since store.Store doesn't expose Watch API directly.
+	// Full etcd Watch would require direct clientv3 access.
+	return d.MemoryDriver.WatchNodes(ctx, callback)
+}
+
+// SetLeaderElection 은 EtcdDriver에 LeaderElection을 연결한다.
+func (d *EtcdDriver) SetLeaderElection(le *LeaderElection) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.leaderElection = le
 }

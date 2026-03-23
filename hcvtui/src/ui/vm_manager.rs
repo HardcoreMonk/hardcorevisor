@@ -63,7 +63,8 @@ pub fn render(frame: &mut Frame, app: &App) {
     frame.render_widget(title, chunks[0]);
 
     // ── VM Table ──
-    let header_cells = ["ID", "NAME", "STATE", "vCPUs", "MEMORY", "NODE", "BACKEND"]
+    // Phase 16: TYPE 컬럼 추가 — "VM"(녹색) 또는 "CT"(시안)으로 워크로드 유형을 구분
+    let header_cells = ["ID", "NAME", "TYPE", "STATE", "vCPUs", "MEMORY", "NODE", "BACKEND"]
         .iter()
         .map(|h| {
             Cell::from(*h).style(
@@ -94,9 +95,20 @@ pub fn render(frame: &mut Frame, app: &App) {
             } else {
                 Style::default()
             };
+            // Phase 16: TYPE 컬럼 렌더링
+            // vm_type이 "container"이면 "CT" (시안색), 그 외에는 "VM" (녹색)으로 표시한다.
+            // api_client.rs의 VmInfo.vm_type 필드에서 가져온다.
+            let is_container = vm.vm_type == "container";
+            let type_label = if is_container { "CT" } else { "VM" };
+            let type_color = if is_container {
+                Color::Cyan
+            } else {
+                Color::Green
+            };
             Row::new(vec![
                 Cell::from(format!("{}", vm.id)),
                 Cell::from(vm.name.as_str()),
+                Cell::from(type_label).style(Style::default().fg(type_color)),
                 Cell::from(vm.state.as_str()).style(Style::default().fg(state_color)),
                 Cell::from(format!("{}", vm.vcpus)),
                 Cell::from(format!("{} MB", vm.memory_mb)),
@@ -111,7 +123,8 @@ pub fn render(frame: &mut Frame, app: &App) {
         rows,
         [
             Constraint::Length(5),
-            Constraint::Min(15),
+            Constraint::Min(12),
+            Constraint::Length(4),
             Constraint::Length(12),
             Constraint::Length(6),
             Constraint::Length(10),
@@ -261,14 +274,17 @@ fn render_vm_detail(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(footer, detail_chunks[1]);
 }
 
-/// VM 생성 폼 팝업을 렌더링한다.
+/// VM/컨테이너 생성 폼 팝업을 렌더링한다.
 ///
-/// 4개 필드(Name, vCPUs, Memory, Backend)를 세로로 배치하며,
+/// 5개 필드(Name, vCPUs, Memory, Backend, Type)를 세로로 배치하며,
 /// 현재 포커스된 필드에 "> " 인디케이터와 커서("_")를 표시한다.
 /// Tab으로 필드 이동, Enter로 생성, Esc로 취소한다.
+///
+/// Phase 16: Type 필드가 추가되어 "vm" 또는 "container"를 선택할 수 있다.
+/// Type이 "container"이면 팝업 제목이 "Create Container"로 변경된다.
 fn render_create_form(frame: &mut Frame, app: &App, area: Rect) {
     let popup_width = 50u16.min(area.width.saturating_sub(4));
-    let popup_height = 14u16.min(area.height.saturating_sub(4));
+    let popup_height = 16u16.min(area.height.saturating_sub(4));
     let x = (area.width.saturating_sub(popup_width)) / 2;
     let y = (area.height.saturating_sub(popup_height)) / 2;
     let popup_area = Rect::new(x, y, popup_width, popup_height);
@@ -276,8 +292,15 @@ fn render_create_form(frame: &mut Frame, app: &App, area: Rect) {
     // Clear background
     frame.render_widget(Clear, popup_area);
 
+    // Phase 16: workload_type에 따라 팝업 제목을 동적으로 변경한다.
+    let is_container = app.create_form.workload_type.trim() == "container";
+    let title = if is_container {
+        " Create Container "
+    } else {
+        " Create VM "
+    };
     let block = Block::default()
-        .title(" Create VM ")
+        .title(title)
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
 
@@ -290,6 +313,7 @@ fn render_create_form(frame: &mut Frame, app: &App, area: Rect) {
         ("vCPUs", &form.vcpus),
         ("Memory (MB)", &form.memory_mb),
         ("Backend", &form.backend),
+        ("Type", &form.workload_type),
     ];
 
     let field_constraints: Vec<Constraint> = fields

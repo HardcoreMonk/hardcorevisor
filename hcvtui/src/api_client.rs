@@ -167,6 +167,23 @@ pub struct VmInfo {
     pub node: String,
     #[serde(default)]
     pub backend: String,
+    /// 워크로드 타입: "vm" 또는 "container" (Phase 16 추가)
+    ///
+    /// VM Manager 화면에서 TYPE 컬럼으로 표시된다.
+    /// "container"이면 LXC 백엔드로 관리되는 컨테이너이다.
+    /// 하위 호환성을 위해 기본값은 "vm" (default_vm_type 함수).
+    #[serde(default = "default_vm_type", rename = "type")]
+    pub vm_type: String,
+    /// LXC 배포 템플릿 이름 (Phase 16 추가)
+    ///
+    /// 컨테이너 생성 시 사용된 템플릿 (예: "ubuntu", "alpine", "debian").
+    /// VM인 경우 빈 문자열이다.
+    #[serde(default)]
+    pub template: String,
+}
+
+fn default_vm_type() -> String {
+    "vm".to_string()
 }
 
 /// 클러스터 노드 리소스 정보 (Dashboard용)
@@ -444,6 +461,43 @@ impl ApiClient {
                 "name": name,
                 "vcpus": vcpus,
                 "memory_mb": memory_mb,
+            }))
+            .send()
+            .await?
+            .json()
+            .await?)
+    }
+
+    /// LXC 컨테이너를 생성한다 (`POST /api/v1/vms`, type=container).
+    ///
+    /// VM 생성 API와 동일한 엔드포인트를 사용하되, type="container"와
+    /// template 필드를 추가하여 LXC 백엔드가 자동 선택되도록 한다.
+    ///
+    /// # 매개변수
+    /// - `name`: 컨테이너 이름
+    /// - `vcpus`: 가상 CPU 수 (cgroup2 cpu.max로 제한)
+    /// - `memory_mb`: 메모리 크기 (MB) (cgroup2 memory.max로 제한)
+    /// - `template`: LXC 배포 템플릿 (예: "ubuntu", "alpine")
+    ///
+    /// # 반환값
+    /// - `Ok(VmInfo)`: 생성된 컨테이너 정보 (backend: "lxc", type: "container")
+    /// - `Err(ApiError)`: 생성 실패
+    pub async fn create_container(
+        &self,
+        name: &str,
+        vcpus: u32,
+        memory_mb: u64,
+        template: &str,
+    ) -> Result<VmInfo, ApiError> {
+        Ok(self
+            .client
+            .post(format!("{}/vms", self.base_url))
+            .json(&serde_json::json!({
+                "name": name,
+                "vcpus": vcpus,
+                "memory_mb": memory_mb,
+                "type": "container",
+                "template": template,
             }))
             .send()
             .await?

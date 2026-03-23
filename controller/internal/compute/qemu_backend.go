@@ -32,9 +32,11 @@ package compute
 
 import (
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -102,14 +104,16 @@ func (b *QEMUBackend) CreateVM(name string, vcpus uint32, memoryMB uint64) (*VMI
 	}
 
 	vm := &VMInfo{
-		ID:        handle,
-		Name:      name,
-		State:     "configured",
-		VCPUs:     vcpus,
-		MemoryMB:  memoryMB,
-		Node:      "local",
-		Backend:   "qemu",
-		CreatedAt: time.Now(),
+		ID:            handle,
+		Name:          name,
+		State:         "configured",
+		VCPUs:         vcpus,
+		MemoryMB:      memoryMB,
+		Node:          "local",
+		Backend:       "qemu",
+		Type:          "vm",
+		RestartPolicy: "always",
+		CreatedAt:     time.Now(),
 	}
 
 	b.mu.Lock()
@@ -150,7 +154,16 @@ func (b *QEMUBackend) DestroyVM(handle int32) error {
 }
 
 func (b *QEMUBackend) StartVM(handle int32) error {
-	return b.transition(handle, "running", "cont")
+	if err := b.transition(handle, "running", "cont"); err != nil {
+		return err
+	}
+	// In Real mode, verify state via QueryStatus
+	if !b.emulated {
+		if err := b.verifyQMPStatus(handle, true); err != nil {
+			slog.Warn("QMP post-start verification failed", "handle", handle, "error", err)
+		}
+	}
+	return nil
 }
 
 func (b *QEMUBackend) StopVM(handle int32) error {
@@ -222,6 +235,109 @@ func (b *QEMUBackend) transition(handle int32, targetState, qmpCmd string) error
 	return nil
 }
 
+// ── Snapshot operations ─────────────────────────────────
+
+// SnapshotVM 은 VM의 현재 상태에 대한 스냅샷을 생성한다.
+//
+// 동작 모드별 처리:
+//   - Emulated 모드: VM 메타데이터(Snapshots 맵)에 스냅샷 이름과 시각을 기록 (시뮬레이션)
+//   - Real 모드: QMP "savevm" 명령을 전송하여 QEMU 내부 스냅샷을 생성
+//     QMP 소켓에 연결 (5초 타임아웃) → savevm 실행 → 연결 해제
+//
+// 매개변수:
+//   - handle: VM 핸들 ID (10000+)
+//   - name: 스냅샷 이름 (고유해야 함)
+//
+// 에러 조건: VM 미존재, QMP 소켓 연결 실패, savevm 명령 실패
+// 부작용: Real 모드에서 QEMU 디스크 이미지에 스냅샷 데이터가 기록됨
+// 동시 호출 안전성: 안전 (mu.Lock 사용)
+func (b *QEMUBackend) SnapshotVM(handle int32, name string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	vm, ok := b.vms[handle]
+	if !ok {
+		return fmt.Errorf("VM not found: %d", handle)
+	}
+
+	if b.emulated {
+		// Store snapshot name in VM metadata (simulated)
+		if vm.Snapshots == nil {
+			vm.Snapshots = make(map[string]time.Time)
+		}
+		vm.Snapshots[name] = time.Now()
+		return nil
+	}
+
+	// Real mode: send QMP savevm command
+	proc, ok := b.processes[handle]
+	if !ok {
+		return fmt.Errorf("no QEMU process for handle %d", handle)
+	}
+
+	client, err := QMPDial(proc.socketPath, 5*time.Second)
+	if err != nil {
+		return fmt.Errorf("QMP connect for snapshot handle %d: %w", handle, err)
+	}
+	defer client.Close()
+
+	if err := client.Execute("savevm", map[string]any{"name": name}); err != nil {
+		return fmt.Errorf("QMP savevm for handle %d: %w", handle, err)
+	}
+
+	return nil
+}
+
+// RestoreSnapshot 은 VM을 이전에 저장된 스냅샷 상태로 복원한다.
+//
+// 동작 모드별 처리:
+//   - Emulated 모드: Snapshots 맵에서 스냅샷 이름 존재 여부만 확인 (시뮬레이션)
+//   - Real 모드: QMP "loadvm" 명령을 전송하여 QEMU 내부 스냅샷에서 복원
+//     QMP 소켓에 연결 (5초 타임아웃) → loadvm 실행 → 연결 해제
+//
+// 매개변수:
+//   - handle: VM 핸들 ID (10000+)
+//   - name: 복원할 스냅샷 이름
+//
+// 에러 조건: VM 미존재, 스냅샷 이름 미존재 (Emulated), QMP 연결/명령 실패 (Real)
+// 부작용: Real 모드에서 VM의 메모리/디스크 상태가 스냅샷 시점으로 변경됨
+// 동시 호출 안전성: 안전 (mu.Lock 사용)
+func (b *QEMUBackend) RestoreSnapshot(handle int32, name string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	vm, ok := b.vms[handle]
+	if !ok {
+		return fmt.Errorf("VM not found: %d", handle)
+	}
+
+	if b.emulated {
+		// Verify snapshot exists in metadata
+		if vm.Snapshots == nil || vm.Snapshots[name].IsZero() {
+			return fmt.Errorf("snapshot not found: %s", name)
+		}
+		return nil
+	}
+
+	// Real mode: send QMP loadvm command
+	proc, ok := b.processes[handle]
+	if !ok {
+		return fmt.Errorf("no QEMU process for handle %d", handle)
+	}
+
+	client, err := QMPDial(proc.socketPath, 5*time.Second)
+	if err != nil {
+		return fmt.Errorf("QMP connect for restore handle %d: %w", handle, err)
+	}
+	defer client.Close()
+
+	if err := client.Execute("loadvm", map[string]any{"name": name}); err != nil {
+		return fmt.Errorf("QMP loadvm for handle %d: %w", handle, err)
+	}
+
+	return nil
+}
+
 // ── QMP Protocol ─────────────────────────────────────────
 
 // qmpSocketPath returns the QMP socket path for a given VM handle.
@@ -283,19 +399,31 @@ func (b *QEMUBackend) qmpCreateVM(handle int32, name string, vcpus uint32, memor
 	}
 	b.processes[handle] = proc
 
-	// Wait briefly for QMP socket to become available, then connect
-	// to verify the process started correctly.
-	time.Sleep(500 * time.Millisecond)
-
-	client, err := QMPDial(socketPath, 5*time.Second)
+	// Exponential backoff retry for QMP socket connection.
+	// Max 5 retries: 100ms → 200ms → 400ms → 800ms → 1600ms
+	var client *QMPClient
+	backoff := 100 * time.Millisecond
+	const maxRetries = 5
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		time.Sleep(backoff)
+		client, err = QMPDial(socketPath, 5*time.Second)
+		if err == nil {
+			break
+		}
+		slog.Debug("QMP connect retry", "handle", handle, "attempt", attempt+1, "backoff", backoff, "error", err)
+		backoff *= 2
+	}
 	if err != nil {
-		// Kill the process if we can't connect
+		// Kill the process if we can't connect after all retries
 		cmd.Process.Kill()
 		cmd.Wait()
 		delete(b.processes, handle)
-		return fmt.Errorf("QMP socket connection failed for handle %d: %w", handle, err)
+		return fmt.Errorf("QMP socket connection failed for handle %d after %d retries: %w", handle, maxRetries, err)
 	}
 	client.Close()
+
+	// Start process monitor goroutine
+	go b.monitorProcess(handle)
 
 	return nil
 }
@@ -316,6 +444,73 @@ func (b *QEMUBackend) qmpCommand(handle int32, command string) error {
 
 	if err := client.Execute(command, nil); err != nil {
 		return fmt.Errorf("QMP command %q for handle %d: %w", command, handle, err)
+	}
+
+	return nil
+}
+
+// monitorProcess 는 QEMU 프로세스를 주기적으로 감시하는 고루틴이다.
+// 프로세스가 죽으면 VM 상태를 "stopped"로 갱신한다.
+// 감시 주기: 5초
+func (b *QEMUBackend) monitorProcess(handle int32) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		b.mu.RLock()
+		proc, procOk := b.processes[handle]
+		vm, vmOk := b.vms[handle]
+		b.mu.RUnlock()
+
+		if !procOk || !vmOk {
+			// VM or process entry removed (e.g., DestroyVM called)
+			return
+		}
+
+		if proc.cmd == nil || proc.cmd.Process == nil {
+			return
+		}
+
+		// Signal(0) checks if process is alive without sending a signal
+		err := proc.cmd.Process.Signal(syscall.Signal(0))
+		if err != nil {
+			slog.Warn("QEMU process died", "handle", handle, "error", err)
+			b.mu.Lock()
+			if v, ok := b.vms[handle]; ok {
+				v.State = "stopped"
+			}
+			delete(b.processes, handle)
+			b.mu.Unlock()
+			return
+		}
+
+		_ = vm // used for existence check above
+	}
+}
+
+// verifyQMPStatus queries the QEMU process state via QMP after a state transition
+// and returns whether the state matches the expected target state.
+// This is used in Real mode to verify that QMP commands took effect.
+func (b *QEMUBackend) verifyQMPStatus(handle int32, expectedRunning bool) error {
+	proc, ok := b.processes[handle]
+	if !ok {
+		return nil // No process — skip verification (emulated mode)
+	}
+
+	client, err := QMPDial(proc.socketPath, 5*time.Second)
+	if err != nil {
+		return fmt.Errorf("QMP connect for status query handle %d: %w", handle, err)
+	}
+	defer client.Close()
+
+	status, err := client.QueryStatus()
+	if err != nil {
+		return fmt.Errorf("QMP query-status handle %d: %w", handle, err)
+	}
+
+	isRunning := (status == "running")
+	if isRunning != expectedRunning {
+		return fmt.Errorf("QMP state mismatch for handle %d: expected running=%v, got status=%q", handle, expectedRunning, status)
 	}
 
 	return nil

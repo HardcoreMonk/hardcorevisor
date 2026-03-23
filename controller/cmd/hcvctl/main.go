@@ -85,11 +85,13 @@ func main() {
 	// ── vm subcommand ──
 	vmCmd := &cobra.Command{Use: "vm", Short: "Manage virtual machines"}
 
-	vmCmd.AddCommand(&cobra.Command{
+	vmListCmd := &cobra.Command{
 		Use:   "list",
 		Short: "List all VMs",
 		RunE:  vmList,
-	})
+	}
+	vmListCmd.Flags().String("type", "", "Filter by type (vm, container)")
+	vmCmd.AddCommand(vmListCmd)
 	vmCreateCmd := &cobra.Command{
 		Use:   "create [name]",
 		Short: "Create a new VM",
@@ -431,7 +433,85 @@ To load fish completions:
 	snapshotRestoreCmd.Flags().String("id", "", "Snapshot ID to restore")
 	snapshotCmd.AddCommand(snapshotRestoreCmd)
 
-	root.AddCommand(vmCmd, nodeCmd, versionCmd, storageCmd, networkCmd, deviceCmd, clusterCmd, completionCmd, backupCmd, statusCmd, shellCmd, templateCmd, imageCmd, snapshotCmd)
+	// ── login subcommand — JWT 인증 후 토큰을 로컬에 저장 ──
+	// 사용법: hcvctl login --user admin --password secret
+	// 토큰 저장 위치: ~/.hcvctl/token (이후 요청에서 자동 사용)
+	loginCmd := &cobra.Command{
+		Use:   "login",
+		Short: "Authenticate and store JWT token",
+		Long:  "Authenticate with the Controller and store the JWT token in ~/.hcvctl/token for subsequent requests.",
+		RunE:  loginRun,
+	}
+	loginCmd.Flags().String("user", "", "Username (overrides global --user)")
+	loginCmd.Flags().String("password", "", "Password (overrides global --password)")
+
+	// ── container subcommand — LXC 컨테이너 관리 ──
+	// VM과 동일한 REST API (/api/v1/vms)를 사용하되, type=container 필터를 적용한다.
+	// 컨테이너 전용 기능: exec (컨테이너 내 명령 실행)
+	containerCmd := &cobra.Command{Use: "container", Short: "Manage LXC containers"}
+
+	containerCmd.AddCommand(&cobra.Command{
+		Use:   "list",
+		Short: "List all containers",
+		RunE:  containerList,
+	})
+
+	ctCreateCmd := &cobra.Command{
+		Use:   "create",
+		Short: "Create a new container",
+		RunE:  containerCreate,
+	}
+	ctCreateCmd.Flags().String("name", "", "Container name")
+	ctCreateCmd.Flags().String("template", "ubuntu", "LXC template (ubuntu, alpine, debian, centos)")
+	ctCreateCmd.Flags().Uint32("vcpus", 1, "Number of vCPUs")
+	ctCreateCmd.Flags().Uint64("memory", 512, "Memory in MB")
+	containerCmd.AddCommand(ctCreateCmd)
+
+	containerCmd.AddCommand(&cobra.Command{
+		Use:   "start [id]",
+		Short: "Start a container",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return vmAction(args[0], "start")
+		},
+	})
+
+	containerCmd.AddCommand(&cobra.Command{
+		Use:   "stop [id]",
+		Short: "Stop a container",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return vmAction(args[0], "stop")
+		},
+	})
+
+	containerCmd.AddCommand(&cobra.Command{
+		Use:   "delete [id]",
+		Short: "Delete a container",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resp, err := apiDelete(fmt.Sprintf("/api/v1/vms/%s", args[0]))
+			if err != nil {
+				return err
+			}
+			defer resp.Body.Close()
+			if err := checkResponse(resp); err != nil {
+				return err
+			}
+			fmt.Printf("Container %s deleted.\n", args[0])
+			return nil
+		},
+	})
+
+	ctExecCmd := &cobra.Command{
+		Use:   "exec [id] -- [command...]",
+		Short: "Execute a command in a container",
+		Args:  cobra.MinimumNArgs(1),
+		RunE:  containerExec,
+	}
+	containerCmd.AddCommand(ctExecCmd)
+
+	root.AddCommand(vmCmd, nodeCmd, versionCmd, storageCmd, networkCmd, deviceCmd, clusterCmd, completionCmd, backupCmd, statusCmd, shellCmd, templateCmd, imageCmd, snapshotCmd, loginCmd, containerCmd)
 
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
@@ -440,9 +520,35 @@ To load fish completions:
 
 // ── API 헬퍼 함수 ──────────────────────────────────────────
 
+// tokenFilePath — JWT 토큰 저장 파일 경로를 반환한다 (~/.hcvctl/token).
+// 홈 디렉터리를 결정할 수 없으면 빈 문자열을 반환한다.
+func tokenFilePath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return home + "/.hcvctl/token"
+}
+
+// loadStoredToken — ~/.hcvctl/token에서 저장된 JWT 토큰을 읽는다.
+// 파일이 없거나 읽기 실패 시 빈 문자열을 반환한다 (인증 없이 요청).
+func loadStoredToken() string {
+	path := tokenFilePath()
+	if path == "" {
+		return ""
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
 // newRequest — API 요청을 생성한다.
 // body가 있으면 Content-Type: application/json 헤더를 설정한다.
-// --user 플래그가 설정되면 Basic Auth를 추가한다.
+// Authentication priority:
+//  1. --user flag → Basic Auth
+//  2. Stored JWT token (~/.hcvctl/token) → Bearer Auth
 func newRequest(method, path string, body io.Reader) (*http.Request, error) {
 	req, err := http.NewRequest(method, apiAddr+path, body)
 	if err != nil {
@@ -453,8 +559,69 @@ func newRequest(method, path string, body io.Reader) (*http.Request, error) {
 	}
 	if authUser != "" {
 		req.SetBasicAuth(authUser, authPass)
+	} else if token := loadStoredToken(); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	return req, nil
+}
+
+// loginRun — login 서브커맨드: Controller에 인증 후 JWT 토큰을 로컬에 저장한다.
+//
+// 처리 순서:
+//  1. --user/--password 플래그 또는 글로벌 플래그에서 인증 정보 수집
+//  2. POST /api/v1/auth/login으로 JWT 토큰 발급 요청
+//  3. 발급된 토큰을 ~/.hcvctl/token에 저장 (0600 퍼미션)
+//  4. 이후 newRequest()가 자동으로 Bearer 토큰을 헤더에 추가
+func loginRun(cmd *cobra.Command, args []string) error {
+	user, _ := cmd.Flags().GetString("user")
+	pass, _ := cmd.Flags().GetString("password")
+	// Fall back to global flags
+	if user == "" {
+		user = authUser
+	}
+	if pass == "" {
+		pass = authPass
+	}
+	if user == "" || pass == "" {
+		return fmt.Errorf("--user and --password are required")
+	}
+
+	resp, err := apiPost("/api/v1/auth/login", map[string]string{
+		"username": user,
+		"password": pass,
+	})
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if err := checkResponse(resp); err != nil {
+		return err
+	}
+
+	var result struct {
+		Token     string `json:"token"`
+		ExpiresAt string `json:"expires_at"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return fmt.Errorf("decode response: %w", err)
+	}
+
+	// Store token in ~/.hcvctl/token
+	path := tokenFilePath()
+	if path == "" {
+		return fmt.Errorf("cannot determine home directory")
+	}
+	dir := path[:strings.LastIndex(path, "/")]
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return fmt.Errorf("create token dir: %w", err)
+	}
+	if err := os.WriteFile(path, []byte(result.Token), 0600); err != nil {
+		return fmt.Errorf("write token: %w", err)
+	}
+
+	fmt.Printf("Login successful. Token stored in %s\n", path)
+	fmt.Printf("Expires at: %s\n", result.ExpiresAt)
+	return nil
 }
 
 func apiGet(path string) (*http.Response, error) {
@@ -541,33 +708,155 @@ func printOutput(data any, headers []string, rows [][]string) {
 // ── VM handlers ──────────────────────────────────────────
 
 func vmList(cmd *cobra.Command, args []string) error {
-	resp, err := apiGet("/api/v1/vms")
+	path := "/api/v1/vms"
+	typeFilter, _ := cmd.Flags().GetString("type")
+	if typeFilter != "" {
+		path += "?type=" + typeFilter
+	}
+	resp, err := apiGet(path)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 
-	var vms []struct {
-		ID       int    `json:"id"`
-		Name     string `json:"name"`
-		State    string `json:"state"`
-		VCPUs    int    `json:"vcpus"`
-		MemoryMB int    `json:"memory_mb"`
-		Node     string `json:"node"`
+	var page struct {
+		Data []struct {
+			ID       int    `json:"id"`
+			Name     string `json:"name"`
+			State    string `json:"state"`
+			VCPUs    int    `json:"vcpus"`
+			MemoryMB int    `json:"memory_mb"`
+			Node     string `json:"node"`
+			Type     string `json:"type"`
+		} `json:"data"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&vms); err != nil {
+	if err := json.NewDecoder(resp.Body).Decode(&page); err != nil {
 		return fmt.Errorf("decode error: %w", err)
 	}
 
-	headers := []string{"ID", "NAME", "STATE", "VCPUS", "MEMORY", "NODE"}
+	headers := []string{"ID", "NAME", "TYPE", "STATE", "VCPUS", "MEMORY", "NODE"}
 	var rows [][]string
-	for _, vm := range vms {
+	for _, vm := range page.Data {
+		vmType := vm.Type
+		if vmType == "" {
+			vmType = "vm"
+		}
 		rows = append(rows, []string{
-			fmt.Sprintf("%d", vm.ID), vm.Name, vm.State,
+			fmt.Sprintf("%d", vm.ID), vm.Name, vmType, vm.State,
 			fmt.Sprintf("%d", vm.VCPUs), fmt.Sprintf("%dMB", vm.MemoryMB), vm.Node,
 		})
 	}
-	printOutput(vms, headers, rows)
+	printOutput(page.Data, headers, rows)
+	return nil
+}
+
+// ── Container handlers — LXC 컨테이너 전용 CLI 핸들러 ──
+
+// containerList — LXC 컨테이너 목록을 출력한다.
+// GET /api/v1/vms?type=container로 컨테이너만 필터링하여 조회한다.
+func containerList(cmd *cobra.Command, args []string) error {
+	resp, err := apiGet("/api/v1/vms?type=container")
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	var page struct {
+		Data []struct {
+			ID       int    `json:"id"`
+			Name     string `json:"name"`
+			State    string `json:"state"`
+			VCPUs    int    `json:"vcpus"`
+			MemoryMB int    `json:"memory_mb"`
+			Node     string `json:"node"`
+			Template string `json:"template"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&page); err != nil {
+		return fmt.Errorf("decode error: %w", err)
+	}
+
+	headers := []string{"ID", "NAME", "STATE", "VCPUS", "MEMORY", "NODE", "TEMPLATE"}
+	var rows [][]string
+	for _, ct := range page.Data {
+		rows = append(rows, []string{
+			fmt.Sprintf("%d", ct.ID), ct.Name, ct.State,
+			fmt.Sprintf("%d", ct.VCPUs), fmt.Sprintf("%dMB", ct.MemoryMB),
+			ct.Node, ct.Template,
+		})
+	}
+	printOutput(page.Data, headers, rows)
+	return nil
+}
+
+// containerCreate — 새 LXC 컨테이너를 생성한다.
+// POST /api/v1/vms에 type=container, template 필드를 포함하여 요청한다.
+// LXC 백엔드가 자동 선택되며, 지정된 배포 템플릿(ubuntu, alpine 등)으로 생성된다.
+func containerCreate(cmd *cobra.Command, args []string) error {
+	name, _ := cmd.Flags().GetString("name")
+	tmpl, _ := cmd.Flags().GetString("template")
+	vcpus, _ := cmd.Flags().GetUint32("vcpus")
+	memory, _ := cmd.Flags().GetUint64("memory")
+
+	if name == "" {
+		return fmt.Errorf("--name is required")
+	}
+
+	body := map[string]interface{}{
+		"name":      name,
+		"vcpus":     vcpus,
+		"memory_mb": memory,
+		"type":      "container",
+		"template":  tmpl,
+	}
+	resp, err := apiPost("/api/v1/vms", body)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if err := checkResponse(resp); err != nil {
+		return err
+	}
+	fmt.Printf("Container '%s' created (template: %s).\n", name, tmpl)
+	return nil
+}
+
+// containerExec — 실행 중인 컨테이너 내에서 명령을 실행한다.
+//
+// 사용법: hcvctl container exec <id> -- ls -la
+// POST /api/v1/vms/{id}/exec에 {"command": ["ls", "-la"]}를 전송한다.
+// Real 모드에서는 lxc-attach로 컨테이너 내부에서 명령을 실행하고 출력을 반환한다.
+func containerExec(cmd *cobra.Command, args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("container ID is required")
+	}
+	id := args[0]
+
+	// Everything after "--" or after the id is the command
+	command := args[1:]
+	if len(command) == 0 {
+		return fmt.Errorf("command is required (use: container exec ID -- command args...)")
+	}
+
+	body := map[string]interface{}{
+		"command": command,
+	}
+	resp, err := apiPost(fmt.Sprintf("/api/v1/vms/%s/exec", id), body)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if err := checkResponse(resp); err != nil {
+		return err
+	}
+
+	var result struct {
+		Output string `json:"output"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return fmt.Errorf("decode error: %w", err)
+	}
+	fmt.Print(result.Output)
 	return nil
 }
 

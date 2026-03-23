@@ -42,19 +42,40 @@ const (
 	PolicyAuto    = "auto"    // 워크로드 특성에 따라 자동 선택
 	PolicyRustVMM = "rustvmm" // RustVMM 백엔드 강제 사용
 	PolicyQEMU    = "qemu"    // QEMU 백엔드 강제 사용
+	PolicyLXC     = "lxc"     // LXC 백엔드 강제 사용 (컨테이너)
 )
 
 // VMInfo — API 레이어에 노출되는 VM의 전체 상태.
 // JSON 직렬화되어 REST/gRPC 응답으로 반환된다.
+//
+// 필드:
+//   - ID: VM 핸들 (RustVMM: 1~9999, QEMU: 10000+)
+//   - State: 현재 상태 ("created", "configured", "running", "paused", "stopped")
+//   - Node: VM이 실행 중인 노드 이름 (마이그레이션 시 변경됨)
+//   - Backend: VM을 관리하는 백엔드 이름 ("rustvmm" 또는 "qemu")
+//   - Type: 인스턴스 타입 ("vm" 또는 "ct" — 컨테이너)
+//   - RestartPolicy: 장애 복구 정책 ("always", "on-failure", "never")
+//   - Snapshots: VM 스냅샷 이름→생성시각 맵 (선택)
+//   - RootFS: LXC 컨테이너용 루트 파일시스템 경로 (선택)
+//   - Template: VM 생성에 사용된 템플릿 이름 (선택)
+//   - Arch: CPU 아키텍처 ("x86_64", "aarch64" 등, 선택)
+//   - IPAddress: VM에 할당된 IP 주소 (선택)
 type VMInfo struct {
-	ID        int32     `json:"id"`
-	Name      string    `json:"name"`
-	State     string    `json:"state"`
-	VCPUs     uint32    `json:"vcpus"`
-	MemoryMB  uint64    `json:"memory_mb"`
-	Node      string    `json:"node"`
-	Backend   string    `json:"backend"`
-	CreatedAt time.Time `json:"created_at"`
+	ID            int32              `json:"id"`
+	Name          string             `json:"name"`
+	State         string             `json:"state"`
+	VCPUs         uint32             `json:"vcpus"`
+	MemoryMB      uint64             `json:"memory_mb"`
+	Node          string             `json:"node"`
+	Backend       string             `json:"backend"`
+	Type          string             `json:"type"`
+	RestartPolicy string             `json:"restart_policy"`
+	CreatedAt     time.Time          `json:"created_at"`
+	Snapshots     map[string]time.Time `json:"snapshots,omitempty"`
+	RootFS        string             `json:"rootfs,omitempty"`
+	Template      string             `json:"template,omitempty"`
+	Arch          string             `json:"arch,omitempty"`
+	IPAddress     string             `json:"ip_address,omitempty"`
 }
 
 // VMMBackend — VMM 백엔드가 구현해야 하는 인터페이스.
@@ -116,14 +137,16 @@ func (b *RustVMMBackend) CreateVM(name string, vcpus uint32, memoryMB uint64) (*
 	}
 
 	vm := &VMInfo{
-		ID:        handle,
-		Name:      name,
-		State:     "configured",
-		VCPUs:     vcpus,
-		MemoryMB:  memoryMB,
-		Node:      "local",
-		Backend:   "rustvmm",
-		CreatedAt: time.Now(),
+		ID:            handle,
+		Name:          name,
+		State:         "configured",
+		VCPUs:         vcpus,
+		MemoryMB:      memoryMB,
+		Node:          "local",
+		Backend:       "rustvmm",
+		Type:          "vm",
+		RestartPolicy: "always",
+		CreatedAt:     time.Now(),
 	}
 	b.mu.Lock()
 	b.vms[handle] = vm
@@ -141,6 +164,8 @@ func (b *RustVMMBackend) DestroyVM(handle int32) error {
 	return nil
 }
 
+// transitionVM 은 vmcore FFI를 통해 VM 상태 전이를 수행하고, 로컬 상태를 동기화하는 내부 헬퍼이다.
+// coreFn 실행 후 GetVMState()로 최신 상태를 읽어 vms 맵에 반영한다.
 func (b *RustVMMBackend) transitionVM(handle int32, action string, coreFn func(int32) error) error {
 	if err := coreFn(handle); err != nil {
 		return err
@@ -203,7 +228,12 @@ type BackendSelector struct {
 	policy   string
 }
 
-// NewBackendSelector creates a selector with the given default policy.
+// NewBackendSelector 는 지정된 기본 정책으로 BackendSelector를 생성한다.
+//
+// 매개변수:
+//   - policy: 기본 백엔드 선택 정책 (PolicyAuto, PolicyRustVMM, PolicyQEMU)
+//
+// 호출 시점: Controller 초기화 시 ComputeService 생성 전
 func NewBackendSelector(policy string) *BackendSelector {
 	return &BackendSelector{
 		backends: make(map[string]VMMBackend),
@@ -211,18 +241,24 @@ func NewBackendSelector(policy string) *BackendSelector {
 	}
 }
 
-// Register adds a backend to the selector.
+// Register 는 백엔드를 셀렉터에 등록한다.
+// 같은 이름의 백엔드가 이미 있으면 덮어쓴다.
+//
+// 호출 시점: Controller 초기화 시, RustVMMBackend와 QEMUBackend를 순서대로 등록
+// 동시 호출 안전성: 안전 (내부 Lock)
 func (s *BackendSelector) Register(b VMMBackend) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.backends[b.Name()] = b
 }
 
-// Select returns the appropriate backend for the given request.
-// If backendHint is non-empty, it forces that backend.
-// Otherwise, the selector's auto policy routes based on workload:
-//   - memoryMB <= 512 or vcpus <= 2 → rustvmm (lightweight microVM)
-//   - otherwise → qemu if available, else rustvmm
+// Select 는 요청에 적합한 백엔드를 반환한다.
+//
+// backendHint가 비어 있지 않으면 해당 백엔드를 강제 선택하고,
+// 비어 있으면 기본값인 "rustvmm"을 사용한다.
+//
+// 에러 조건: 지정된 이름의 백엔드가 등록되어 있지 않은 경우
+// 동시 호출 안전성: 안전 (내부 RLock)
 func (s *BackendSelector) Select(backendHint string) (VMMBackend, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -240,7 +276,15 @@ func (s *BackendSelector) Select(backendHint string) (VMMBackend, error) {
 	return b, nil
 }
 
-// SelectAuto chooses a backend based on workload characteristics.
+// SelectAuto 는 워크로드 특성에 따라 최적의 백엔드를 자동 선택한다.
+//
+// 선택 기준:
+//   - GPU 패스스루 필요, 메모리 > 8GB, vCPU > 8개 → QEMU (범용/대형 VM)
+//   - 그 외 → rustvmm (경량 microVM)
+//   - 선택된 백엔드가 없으면 사용 가능한 아무 백엔드 반환
+//
+// 에러 조건: 등록된 백엔드가 하나도 없는 경우
+// 동시 호출 안전성: 안전 (내부 RLock)
 func (s *BackendSelector) SelectAuto(vcpus uint32, memoryMB uint64, needsGPU bool) (VMMBackend, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -265,7 +309,10 @@ func (s *BackendSelector) SelectAuto(vcpus uint32, memoryMB uint64, needsGPU boo
 	return nil, fmt.Errorf("no backends registered")
 }
 
-// List returns info about all registered backends.
+// List 는 등록된 모든 백엔드의 정보를 반환한다.
+//
+// 호출 시점: REST GET /api/v1/backends
+// 동시 호출 안전성: 안전 (내부 RLock)
 func (s *BackendSelector) List() []BackendInfo {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -276,7 +323,8 @@ func (s *BackendSelector) List() []BackendInfo {
 	return result
 }
 
-// BackendInfo describes a registered backend.
+// BackendInfo 는 등록된 VMM 백엔드의 이름과 상태를 나타낸다.
+// REST API 응답으로 JSON 직렬화된다.
 type BackendInfo struct {
 	Name   string `json:"name"`
 	Status string `json:"status"`
@@ -299,9 +347,27 @@ type ComputeProvider interface {
 	ListBackends() []BackendInfo
 	// MigrateVM — VM을 다른 노드로 마이그레이션한다 (현재 시뮬레이션).
 	MigrateVM(handle int32, targetNode string) error
+	// GetMigrationStatus — VM 마이그레이션 진행 상태를 조회한다.
+	GetMigrationStatus(handle int32) (*MigrationStatus, error)
 }
 
 // ── Compute Service ─────────────────────────────────────────
+
+// MigrationStatus — VM 마이그레이션 진행 상태를 나타낸다.
+// JSON 직렬화되어 REST/gRPC 응답으로 반환된다.
+//
+// Phase 진행 순서: "pre-check" → "transferring" → "completed" (또는 "failed")
+// Progress: 0~100 퍼센트 (pre-check=0, transferring=50, completed=100)
+type MigrationStatus struct {
+	VMID        int32     `json:"vm_id"`              // 마이그레이션 대상 VM ID
+	SourceNode  string    `json:"source_node"`         // 원래 노드 이름
+	TargetNode  string    `json:"target_node"`         // 대상 노드 이름
+	Phase       string    `json:"phase"`               // 현재 단계: "pre-check", "transferring", "completed", "failed"
+	Progress    int       `json:"progress"`            // 진행률 (0~100)
+	StartedAt   time.Time `json:"started_at"`          // 마이그레이션 시작 시각
+	CompletedAt time.Time `json:"completed_at,omitempty"` // 완료 시각 (진행 중이면 zero)
+	Error       string    `json:"error,omitempty"`     // 실패 시 에러 메시지
+}
 
 // ComputeService — 여러 백엔드에 걸친 VM 작업을 오케스트레이션하는 서비스.
 // BackendSelector를 통해 VM 생성 시 적합한 백엔드를 선택하고,
@@ -310,19 +376,34 @@ type ComputeService struct {
 	selector       *BackendSelector
 	defaultBackend VMMBackend
 	nextID         atomic.Int32
+	migrationsMu   sync.RWMutex
+	migrations     map[int32]*MigrationStatus
 }
 
-// NewComputeService creates a new compute service.
+// NewComputeService 는 BackendSelector와 기본 백엔드로 ComputeService를 생성한다.
+//
+// 매개변수:
+//   - selector: 백엔드 라우팅을 담당하는 BackendSelector
+//   - defaultBackend: 힌트 없을 때 사용하는 기본 백엔드 (보통 RustVMMBackend)
+//
+// 호출 시점: Controller 초기화 시
 func NewComputeService(selector *BackendSelector, defaultBackend VMMBackend) *ComputeService {
 	cs := &ComputeService{
 		selector:       selector,
 		defaultBackend: defaultBackend,
+		migrations:     make(map[int32]*MigrationStatus),
 	}
 	cs.nextID.Store(1)
 	return cs
 }
 
-// CreateVM creates a VM using the selected backend.
+// CreateVM 은 선택된 백엔드를 통해 VM을 생성한다.
+//
+// backendHint가 비어 있으면 기본 백엔드(rustvmm)를 사용한다.
+// "qemu"를 지정하면 QEMU 백엔드로 VM을 생성한다.
+//
+// 호출 시점: REST POST /api/v1/vms
+// 에러 조건: 백엔드 선택 실패, 백엔드의 VM 생성 실패
 func (cs *ComputeService) CreateVM(name string, vcpus uint32, memoryMB uint64, backendHint string) (*VMInfo, error) {
 	backend, err := cs.selector.Select(backendHint)
 	if err != nil {
@@ -331,9 +412,12 @@ func (cs *ComputeService) CreateVM(name string, vcpus uint32, memoryMB uint64, b
 	return backend.CreateVM(name, vcpus, memoryMB)
 }
 
-// GetVM retrieves a VM from the backend that owns it.
+// GetVM 은 모든 백엔드를 검색하여 VM 정보를 조회한다.
+//
+// 호출 시점: REST GET /api/v1/vms/{id}
+// 에러 조건: 모든 백엔드에서 해당 handle의 VM을 찾지 못한 경우 (404)
 func (cs *ComputeService) GetVM(handle int32) (*VMInfo, error) {
-	// Search across all backends
+	// 모든 백엔드에서 순차적으로 검색
 	for _, b := range cs.listBackends() {
 		if vm, err := b.GetVM(handle); err == nil {
 			return vm, nil
@@ -342,7 +426,10 @@ func (cs *ComputeService) GetVM(handle int32) (*VMInfo, error) {
 	return nil, fmt.Errorf("VM not found: %d", handle)
 }
 
-// ListVMs returns all VMs across all backends.
+// ListVMs 는 모든 백엔드의 VM 목록을 합쳐서 반환한다.
+//
+// 호출 시점: REST GET /api/v1/vms
+// 동시 호출 안전성: 안전 (각 백엔드 내부 RLock)
 func (cs *ComputeService) ListVMs() []*VMInfo {
 	var all []*VMInfo
 	for _, b := range cs.listBackends() {
@@ -351,7 +438,13 @@ func (cs *ComputeService) ListVMs() []*VMInfo {
 	return all
 }
 
-// ActionVM performs a lifecycle action on a VM.
+// ActionVM 은 VM에 생명주기 액션을 수행한다.
+//
+// 지원 액션: "start", "stop", "pause", "resume"
+// 처리 순서: findBackendForVM()으로 소유 백엔드 찾기 → 액션 실행 → 최신 상태 반환
+//
+// 호출 시점: REST POST /api/v1/vms/{id}/{action}
+// 에러 조건: VM 미존재, 알 수 없는 액션, 잘못된 상태 전이 (409)
 func (cs *ComputeService) ActionVM(handle int32, action string) (*VMInfo, error) {
 	backend, err := cs.findBackendForVM(handle)
 	if err != nil {
@@ -376,7 +469,10 @@ func (cs *ComputeService) ActionVM(handle int32, action string) (*VMInfo, error)
 	return backend.GetVM(handle)
 }
 
-// DestroyVM removes a VM.
+// DestroyVM 은 VM을 삭제한다.
+//
+// 호출 시점: REST DELETE /api/v1/vms/{id}
+// 에러 조건: VM 미존재
 func (cs *ComputeService) DestroyVM(handle int32) error {
 	backend, err := cs.findBackendForVM(handle)
 	if err != nil {
@@ -385,27 +481,107 @@ func (cs *ComputeService) DestroyVM(handle int32) error {
 	return backend.DestroyVM(handle)
 }
 
-// ListBackends returns info about registered backends.
+// ListBackends 는 등록된 VMM 백엔드 정보 목록을 반환한다.
+//
+// 호출 시점: REST GET /api/v1/backends
 func (cs *ComputeService) ListBackends() []BackendInfo {
 	return cs.selector.List()
 }
 
-// MigrateVM performs a simulated live migration by updating the VM's node field.
+// MigrateVM 은 시뮬레이션된 라이브 마이그레이션을 수행한다.
+//
+// 마이그레이션 전 검증:
+//   - VM이 존재해야 한다
+//   - VM이 "running" 상태여야 한다
+//   - 대상 노드가 현재 노드와 달라야 한다
+//
+// 마이그레이션 단계: pre-check → transferring (50%) → completed (100%)
+// 현재 구현은 동기적 시뮬레이션이며, 실제 메모리/디스크 전송은 수행하지 않는다.
+//
+// 호출 시점: REST POST /api/v1/vms/{id}/migrate
+// 에러 조건: VM 미존재, VM이 running 상태가 아님, 대상=소스 노드
 func (cs *ComputeService) MigrateVM(handle int32, targetNode string) error {
 	backend, err := cs.findBackendForVM(handle)
 	if err != nil {
-		return err
+		return fmt.Errorf("VM not found: %d", handle)
 	}
 
 	vm, err := backend.GetVM(handle)
 	if err != nil {
-		return err
+		return fmt.Errorf("VM not found: %d", handle)
 	}
 
+	// Pre-check: VM must be running
+	if vm.State != "running" {
+		status := &MigrationStatus{
+			VMID:       handle,
+			SourceNode: vm.Node,
+			TargetNode: targetNode,
+			Phase:      "failed",
+			Progress:   0,
+			StartedAt:  time.Now(),
+			Error:      fmt.Sprintf("VM must be running to migrate, current state: %s", vm.State),
+		}
+		cs.migrationsMu.Lock()
+		cs.migrations[handle] = status
+		cs.migrationsMu.Unlock()
+		return fmt.Errorf("VM %d must be running to migrate, current state: %s", handle, vm.State)
+	}
+
+	// Pre-check: target != source
+	if vm.Node == targetNode {
+		return fmt.Errorf("VM %d is already on node %s", handle, targetNode)
+	}
+
+	// Create migration status
+	status := &MigrationStatus{
+		VMID:       handle,
+		SourceNode: vm.Node,
+		TargetNode: targetNode,
+		Phase:      "pre-check",
+		Progress:   0,
+		StartedAt:  time.Now(),
+	}
+
+	cs.migrationsMu.Lock()
+	cs.migrations[handle] = status
+	cs.migrationsMu.Unlock()
+
+	// Simulate migration phases
+	cs.migrationsMu.Lock()
+	status.Phase = "transferring"
+	status.Progress = 50
+	cs.migrationsMu.Unlock()
+
+	// Complete migration
 	vm.Node = targetNode
+
+	cs.migrationsMu.Lock()
+	status.Phase = "completed"
+	status.Progress = 100
+	status.CompletedAt = time.Now()
+	cs.migrationsMu.Unlock()
+
 	return nil
 }
 
+// GetMigrationStatus 는 VM의 마이그레이션 진행 상태를 반환한다.
+//
+// 호출 시점: REST GET /api/v1/vms/{id}/migration 또는 gRPC
+// 에러 조건: 해당 VM에 대한 마이그레이션 기록이 없는 경우
+// 동시 호출 안전성: 안전 (내부 RLock)
+func (cs *ComputeService) GetMigrationStatus(handle int32) (*MigrationStatus, error) {
+	cs.migrationsMu.RLock()
+	defer cs.migrationsMu.RUnlock()
+	status, ok := cs.migrations[handle]
+	if !ok {
+		return nil, fmt.Errorf("no migration status for VM %d", handle)
+	}
+	return status, nil
+}
+
+// listBackends 는 셀렉터에 등록된 모든 백엔드를 슬라이스로 반환한다.
+// 내부 헬퍼 함수로, GetVM/ListVMs/ActionVM 등에서 전체 백엔드 순회에 사용된다.
 func (cs *ComputeService) listBackends() []VMMBackend {
 	cs.selector.mu.RLock()
 	defer cs.selector.mu.RUnlock()
@@ -416,6 +592,9 @@ func (cs *ComputeService) listBackends() []VMMBackend {
 	return result
 }
 
+// findBackendForVM 은 주어진 handle의 VM을 소유한 백엔드를 찾아 반환한다.
+// 모든 백엔드를 순회하며 GetVM() 성공 여부로 소유권을 판별한다.
+// 에러 조건: 어떤 백엔드에서도 해당 VM을 찾지 못한 경우
 func (cs *ComputeService) findBackendForVM(handle int32) (VMMBackend, error) {
 	for _, b := range cs.listBackends() {
 		if _, err := b.GetVM(handle); err == nil {

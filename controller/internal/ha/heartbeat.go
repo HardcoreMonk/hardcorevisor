@@ -11,6 +11,7 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/store"
@@ -83,6 +84,135 @@ func (h *Heartbeat) register(ctx context.Context) {
 
 	if err := h.store.Put(ctx, "ha/nodes/"+h.nodeName, node); err != nil {
 		slog.Warn("heartbeat registration failed", "node", h.nodeName, "error", err)
+	}
+}
+
+// Deregister 는 etcd에서 현재 노드를 제거한다.
+// 그레이스풀 셧다운 시 호출하여 노드 레지스트리에서 제거한다.
+func (h *Heartbeat) Deregister() {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := h.store.Delete(ctx, "ha/nodes/"+h.nodeName); err != nil {
+		slog.Warn("heartbeat deregister failed", "node", h.nodeName, "error", err)
+	} else {
+		slog.Info("node deregistered", "node", h.nodeName)
+	}
+}
+
+// ── 장애 감지 ────────────────────────────────────────────
+
+// FailureDetector 는 노드 장애를 감지하는 관리자이다.
+// 주기적으로 모든 노드의 LastSeen을 확인하여 장애를 감지하고 콜백을 실행한다.
+type FailureDetector struct {
+	driver           HADriver
+	watchInterval    time.Duration
+	failureThreshold time.Duration
+	mu               sync.Mutex
+	callbacks        []func(nodeName string)
+	cancel           context.CancelFunc
+	failedMu         sync.RWMutex
+	failedNodes      map[string]bool // tracks which nodes are currently marked as failed
+}
+
+// NewFailureDetector 는 장애 감지기를 생성한다.
+// failureThreshold는 heartbeatInterval의 3배로 설정된다.
+//
+// 매개변수:
+//   - driver: 노드 목록과 상태를 조회하는 HADriver
+//   - heartbeatInterval: 하트비트 전송 간격 (장애 임계값 = 3배)
+func NewFailureDetector(driver HADriver, heartbeatInterval time.Duration) *FailureDetector {
+	return &FailureDetector{
+		driver:           driver,
+		watchInterval:    heartbeatInterval,
+		failureThreshold: heartbeatInterval * 3,
+		failedNodes:      make(map[string]bool),
+	}
+}
+
+// OnNodeDown 은 노드 장애 시 실행할 콜백을 등록한다.
+func (fd *FailureDetector) OnNodeDown(callback func(nodeName string)) {
+	fd.mu.Lock()
+	defer fd.mu.Unlock()
+	fd.callbacks = append(fd.callbacks, callback)
+}
+
+// Start 는 백그라운드 고루틴에서 장애 감지를 시작한다.
+func (fd *FailureDetector) Start(ctx context.Context) {
+	detectCtx, cancel := context.WithCancel(ctx)
+	fd.cancel = cancel
+
+	go func() {
+		ticker := time.NewTicker(fd.watchInterval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				fd.checkNodes()
+			case <-detectCtx.Done():
+				return
+			}
+		}
+	}()
+
+	slog.Info("failure detector started",
+		"interval", fd.watchInterval,
+		"threshold", fd.failureThreshold)
+}
+
+// Stop 은 장애 감지를 중지한다.
+func (fd *FailureDetector) Stop() {
+	if fd.cancel != nil {
+		fd.cancel()
+	}
+}
+
+// checkNodes 는 모든 노드의 LastSeen을 확인하여 장애를 감지한다.
+// 노드의 LastSeen이 failureThreshold를 초과하면 장애로 판단하고 콜백을 실행한다.
+// 이전에 장애로 표시된 노드가 다시 온라인이 되면 복구로 표시한다.
+func (fd *FailureDetector) checkNodes() {
+	nodes, err := fd.driver.ListNodes()
+	if err != nil {
+		slog.Warn("failure detector: failed to list nodes", "error", err)
+		return
+	}
+
+	fd.mu.Lock()
+	callbacks := make([]func(string), len(fd.callbacks))
+	copy(callbacks, fd.callbacks)
+	fd.mu.Unlock()
+
+	now := time.Now()
+	for _, node := range nodes {
+		if node.Status == NodeFenced {
+			continue
+		}
+
+		elapsed := now.Sub(node.LastSeen)
+
+		fd.failedMu.RLock()
+		wasFailed := fd.failedNodes[node.Name]
+		fd.failedMu.RUnlock()
+
+		if elapsed > fd.failureThreshold && node.Status == NodeOnline {
+			if !wasFailed {
+				slog.Warn("node failure detected",
+					"node", node.Name,
+					"last_seen", node.LastSeen,
+					"elapsed", elapsed)
+				fd.failedMu.Lock()
+				fd.failedNodes[node.Name] = true
+				fd.failedMu.Unlock()
+				for _, cb := range callbacks {
+					cb(node.Name)
+				}
+			}
+		} else if wasFailed && elapsed <= fd.failureThreshold {
+			slog.Info("node recovered", "node", node.Name)
+			fd.failedMu.Lock()
+			delete(fd.failedNodes, node.Name)
+			fd.failedMu.Unlock()
+		}
 	}
 }
 

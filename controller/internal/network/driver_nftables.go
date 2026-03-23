@@ -25,10 +25,13 @@ import (
 // MemoryDriver를 임베딩하여 존/VNet은 인메모리로 관리하고,
 // 방화벽 규칙만 nft 명령으로 실제 시스템에 적용한다.
 // nft 실행 실패 시에도 인메모리에는 규칙이 저장된다 (Enabled=false로 표시).
+// BridgeManager를 통해 VXLAN 오버레이 및 브릿지를 관리한다.
 type NftablesDriver struct {
-	MemoryDriver // embed for zones/vnets
-	tableName    string
-	chainName    string
+	MemoryDriver  // embed for zones/vnets
+	tableName     string
+	chainName     string
+	bridgeMgr     *BridgeManager
+	zoneIfaces    map[string][]string // zone name → created interface names
 }
 
 // NewNftablesDriver 는 기본 테이블/체인 이름으로 NftablesDriver를 생성한다.
@@ -36,9 +39,17 @@ type NftablesDriver struct {
 //
 // 호출 시점: Controller 초기화 시 nftables 드라이버 선택 시
 func NewNftablesDriver() *NftablesDriver {
+	return NewNftablesDriverWithBridge(NewBridgeManager())
+}
+
+// NewNftablesDriverWithBridge 는 지정된 BridgeManager를 사용하는 NftablesDriver를 생성한다.
+// 테스트에서 MockCommandRunner가 주입된 BridgeManager를 사용할 때 유용하다.
+func NewNftablesDriverWithBridge(bridgeMgr *BridgeManager) *NftablesDriver {
 	d := &NftablesDriver{
-		tableName: "hcv_filter",
-		chainName: "hcv_forward",
+		tableName:  "hcv_filter",
+		chainName:  "hcv_forward",
+		bridgeMgr:  bridgeMgr,
+		zoneIfaces: make(map[string][]string),
 	}
 	d.MemoryDriver = *newMemoryDriver()
 	return d
@@ -126,5 +137,100 @@ func (d *NftablesDriver) DeleteFirewallRule(id string) error {
 	if err := d.MemoryDriver.DeleteFirewallRule(id); err != nil {
 		return err
 	}
+	return nil
+}
+
+// CreateZone 은 SDN 존을 생성하고 관련 네트워크 인터페이스를 구성한다.
+//
+// 존 타입별 동작:
+//   - "vxlan": VXLAN 인터페이스 생성 + 브릿지에 연결 + 활성화
+//   - "simple", "vlan": 브릿지만 생성 (BridgeManager에 위임)
+//
+// VXLAN 실행 명령:
+//
+//	ip link add {name} type vxlan id {tag} dport 4789 local {localIP}
+//	ip link set {name} master {bridge}
+//	ip link set {name} up
+//
+// 에러 조건: ip 명령 실행 실패, 권한 부족
+func (d *NftablesDriver) CreateZone(zone *Zone) error {
+	// Store in memory first
+	d.mu.Lock()
+	d.zones[zone.Name] = zone
+	d.mu.Unlock()
+
+	bridge := zone.Bridge
+	if bridge == "" {
+		bridge = "hcv-" + zone.Name
+	}
+
+	var ifaces []string
+
+	switch zone.ZoneType {
+	case "vxlan":
+		vxlanIface := "vxlan-" + zone.Name
+
+		// Create VXLAN interface
+		// Note: using 0.0.0.0 as local IP for development; production should use real node IP
+		localIP := "0.0.0.0"
+		vni := fmt.Sprintf("%d", zone.MTU) // Use MTU field as VNI for zone config
+		if zone.MTU == 0 {
+			vni = "100" // default VNI
+		}
+
+		if err := d.bridgeMgr.runner.Run("ip", "link", "add", vxlanIface, "type", "vxlan",
+			"id", vni, "dport", "4789", "local", localIP); err != nil {
+			return fmt.Errorf("create VXLAN interface for zone %s: %w", zone.Name, err)
+		}
+		ifaces = append(ifaces, vxlanIface)
+
+		// Create bridge and add VXLAN interface
+		if err := d.bridgeMgr.CreateBridge(bridge); err != nil {
+			return fmt.Errorf("create bridge for zone %s: %w", zone.Name, err)
+		}
+		ifaces = append(ifaces, bridge)
+
+		if err := d.bridgeMgr.AddPort(bridge, vxlanIface); err != nil {
+			return fmt.Errorf("add VXLAN port for zone %s: %w", zone.Name, err)
+		}
+
+		if err := d.bridgeMgr.runner.Run("ip", "link", "set", vxlanIface, "up"); err != nil {
+			return fmt.Errorf("bring up VXLAN interface for zone %s: %w", zone.Name, err)
+		}
+
+	default: // "simple", "vlan", etc.
+		if err := d.bridgeMgr.CreateBridge(bridge); err != nil {
+			return fmt.Errorf("create bridge for zone %s: %w", zone.Name, err)
+		}
+		ifaces = append(ifaces, bridge)
+	}
+
+	d.mu.Lock()
+	d.zoneIfaces[zone.Name] = ifaces
+	zone.Status = "active"
+	d.mu.Unlock()
+
+	return nil
+}
+
+// DeleteZone 은 SDN 존과 관련 네트워크 인터페이스를 삭제한다.
+//
+// 에러 조건: 존 미존재
+func (d *NftablesDriver) DeleteZone(name string) error {
+	d.mu.Lock()
+	if _, ok := d.zones[name]; !ok {
+		d.mu.Unlock()
+		return fmt.Errorf("zone not found: %s", name)
+	}
+	ifaces := d.zoneIfaces[name]
+	delete(d.zones, name)
+	delete(d.zoneIfaces, name)
+	d.mu.Unlock()
+
+	// Delete interfaces (best-effort, reverse order)
+	for i := len(ifaces) - 1; i >= 0; i-- {
+		d.bridgeMgr.runner.Run("ip", "link", "delete", ifaces[i]) // ignore errors
+	}
+
 	return nil
 }

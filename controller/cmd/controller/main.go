@@ -70,6 +70,10 @@ func main() {
 	// ── 구조화 로깅 초기화 (slog 기반, text/json 형식) ──
 	logging.Setup(cfg.Log.Level, cfg.Log.Format)
 
+	// ── 시그널 컨텍스트 (셧다운 대기용) ──
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
 	nodeName := ha.GetNodeName()
 	slog.Info("HardCoreVisor Controller starting", "version", version, "node", nodeName)
 
@@ -78,13 +82,19 @@ func main() {
 	core := ffi.NewMockVMCore()
 	core.Init()
 
-	// Dual VMM 백엔드 구성: RustVMM(경량 microVM) + QEMU(범용 VM)
+	// ── Triple VMM 백엔드 구성 (Phase 16 추가: LXC) ──
+	// RustVMM: 고성능 Linux microVM (Handle 1~9999)
+	// QEMU: 범용 VM — Windows, GPU 패스스루, 레거시 OS (Handle 10000~19999)
+	// LXC: 경량 Linux 컨테이너 — 빠른 시작, 낮은 오버헤드 (Handle 20000+)
 	rustVMM := compute.NewRustVMMBackend(core)
 	qemuBackend := compute.NewQEMUBackend(&compute.QEMUConfig{Emulated: true})
+	lxcBackend := compute.NewLXCBackend(&compute.LXCBackendConfig{Emulated: true})
 	// BackendSelector: 워크로드 특성에 따라 적합한 VMM을 자동 선택
+	// PolicyAuto: GPU/대형 → QEMU, 컨테이너 → LXC, 경량 Linux → RustVMM
 	selector := compute.NewBackendSelector(compute.PolicyAuto)
 	selector.Register(rustVMM)
 	selector.Register(qemuBackend)
+	selector.Register(lxcBackend)
 	computeSvc := compute.NewComputeService(selector, rustVMM)
 
 	// ── 상태 저장소 (etcd 또는 인메모리 폴백) ──
@@ -125,16 +135,84 @@ func main() {
 
 	// HA service — use etcd driver when etcd is available
 	var haSvc *ha.Service
+	var haServices *api.HAServices
+	etcdEndpoints := cfg.Etcd.GetEndpoints()
 	if _, isMemory := kvStore.(*store.MemoryStore); !isMemory {
 		slog.Info("Using etcd HA driver")
-		haSvc = ha.NewServiceWithDriver(ha.NewEtcdDriver(kvStore, nodeName))
+		etcdDriver := ha.NewEtcdDriver(kvStore, nodeName)
+		haSvc = ha.NewServiceWithDriver(etcdDriver)
 		hb := ha.NewHeartbeat(kvStore, nodeName, 10*time.Second)
 		hb.Start()
 		defer hb.Stop()
+		defer hb.Deregister()
+
+		// Initialize HA production components
+		leaderElection, err := ha.NewLeaderElection(etcdEndpoints, nodeName, 15)
+		if err != nil {
+			slog.Warn("failed to create leader election", "error", err)
+		} else {
+			if err := leaderElection.Campaign(ctx); err != nil {
+				slog.Warn("leader campaign failed", "error", err)
+			}
+			etcdDriver.SetLeaderElection(leaderElection)
+			defer leaderElection.Close()
+		}
+
+		lockManager := ha.NewLockManager(etcdEndpoints)
+		defer lockManager.Close()
+
+		failoverManager := ha.NewFailoverManager(leaderElection, lockManager)
+		failoverManager.SetDriver(etcdDriver)
+
+		// Wire failure detector to failover manager
+		fd := ha.NewFailureDetector(etcdDriver, 10*time.Second)
+		fd.OnNodeDown(failoverManager.HandleNodeDown)
+		fd.Start(ctx)
+		defer fd.Stop()
+
+		haServices = &api.HAServices{
+			LeaderElection:  leaderElection,
+			LockManager:     lockManager,
+			FailoverManager: failoverManager,
+		}
 	} else {
 		haSvc = ha.NewService()
+
+		// Single-node mode HA components
+		leaderElection, _ := ha.NewLeaderElection(nil, nodeName, 15)
+		lockManager := ha.NewLockManager(nil)
+		failoverManager := ha.NewFailoverManager(leaderElection, lockManager)
+
+		haServices = &api.HAServices{
+			LeaderElection:  leaderElection,
+			LockManager:     lockManager,
+			FailoverManager: failoverManager,
+		}
 	}
 	backupSvc := backup.NewService(storageSvc)
+
+	// ── JWT Auth + UserDB 초기화 (Phase 17) ──
+	// UserDB: bbolt 기반 사용자 DB (bcrypt 해시 비밀번호 저장)
+	// JWTService: HMAC-SHA256 JWT 토큰 발급/검증 (기본 TTL: 24시간)
+	// SeedDefaultAdmin(): 최초 실행 시 admin/admin 기본 계정 생성
+	var authServices *api.AuthServices
+	dbPath := cfg.Auth.DBPath
+	if dbPath == "" {
+		dbPath = "hcv.db"
+	}
+	userDB, err := auth.NewUserDB(dbPath)
+	if err != nil {
+		slog.Error("failed to open user database", "error", err, "path", dbPath)
+	} else {
+		defer userDB.Close()
+		userDB.SeedDefaultAdmin()
+		jwtSvc := auth.NewJWTService(cfg.Auth.JWTSecret, 24*time.Hour)
+		authServices = &api.AuthServices{
+			UserDB:     userDB,
+			JWTService: jwtSvc,
+		}
+		slog.Info("JWT auth initialized", "db", dbPath)
+	}
 
 	// ── REST API 라우터 구성 ──
 	eventHub := api.NewEventHub()
@@ -144,8 +222,11 @@ func main() {
 		Network:    networkSvc,
 		Peripheral: peripheralSvc,
 		HA:         haSvc,
+		HAServices: haServices,
 		Backup:     backupSvc,
 		Image:      imageSvc,
+		LXC:        lxcBackend,
+		Auth:       authServices,
 		EventHub:   eventHub,
 		Version: api.VersionInfo{
 			Version:   version,
@@ -176,9 +257,6 @@ func main() {
 	grpcSrv := grpcapi.NewServer(grpcSvc)
 
 	// ── 서버 시작 (REST + gRPC 동시 서빙) ──
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
 	go func() {
 		slog.Info("REST API listening", "addr", cfg.API.Addr)
 		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {

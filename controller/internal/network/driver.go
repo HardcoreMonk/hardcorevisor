@@ -43,4 +43,13 @@ type NetworkDriver interface {
 	// DeleteFirewallRule 은 방화벽 규칙을 삭제한다.
 	// 에러 조건: 규칙 미존재
 	DeleteFirewallRule(id string) error
+
+	// CreateZone 은 SDN 존을 생성한다.
+	// 구현체에 따라 실제 네트워크 인터페이스를 생성할 수 있다.
+	// 에러 조건: 존 이름 중복, 시스템 명령 실패
+	CreateZone(zone *Zone) error
+
+	// DeleteZone 은 SDN 존을 삭제한다.
+	// 에러 조건: 존 미존재
+	DeleteZone(name string) error
 }

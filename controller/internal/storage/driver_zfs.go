@@ -163,6 +163,101 @@ func (d *ZFSDriver) ListSnapshots(volumeID string) ([]*Snapshot, error) {
 	return snapshots, nil
 }
 
+// RollbackSnapshot 은 "zfs rollback <snapshotID>" 명령으로 스냅샷을 롤백한다.
+// 볼륨이 스냅샷 시점의 상태로 되돌아간다.
+// 에러 조건: 스냅샷 미존재, 권한 부족
+// 부작용: 실제 ZFS 볼륨 데이터 변경 (복구 불가)
+func (d *ZFSDriver) RollbackSnapshot(snapshotID string) error {
+	cmd := exec.Command("zfs", "rollback", snapshotID)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("zfs rollback %s: %s: %w", snapshotID, strings.TrimSpace(string(out)), err)
+	}
+	return nil
+}
+
+// CloneSnapshot 은 "zfs clone <snapshotID> <pool>/<newVolName>" 명령으로
+// 스냅샷에서 새 볼륨을 복제한다.
+// snapshotID는 "pool/volume@snapname" 형식이어야 하며, 풀 이름을 자동 추출한다.
+// 에러 조건: 스냅샷 미존재, 권한 부족
+// 부작용: 실제 ZFS clone 생성 (파일 시스템 변경)
+func (d *ZFSDriver) CloneSnapshot(snapshotID, newVolName string) (*Volume, error) {
+	// Extract pool from snapshotID (format: pool/volume@snapname)
+	parts := strings.SplitN(snapshotID, "/", 2)
+	pool := parts[0]
+	targetName := fmt.Sprintf("%s/%s", pool, newVolName)
+
+	cmd := exec.Command("zfs", "clone", snapshotID, targetName)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("zfs clone %s %s: %s: %w", snapshotID, targetName, strings.TrimSpace(string(out)), err)
+	}
+
+	vol := &Volume{
+		ID:        targetName,
+		Pool:      pool,
+		Name:      newVolName,
+		Format:    "zvol",
+		Path:      fmt.Sprintf("/dev/zvol/%s", targetName),
+		CreatedAt: time.Now().Unix(),
+	}
+	return vol, nil
+}
+
+// DeleteSnapshot 은 "zfs destroy <snapshotID>" 명령으로 스냅샷을 삭제한다.
+// snapshotID는 "pool/volume@snapname" 형식이어야 한다.
+// 에러 조건: 스냅샷 미존재, 클론 의존성, 권한 부족
+// 부작용: 실제 ZFS 스냅샷 삭제 (복구 불가)
+func (d *ZFSDriver) DeleteSnapshot(snapshotID string) error {
+	cmd := exec.Command("zfs", "destroy", snapshotID)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("zfs destroy snapshot %s: %s: %w", snapshotID, strings.TrimSpace(string(out)), err)
+	}
+	return nil
+}
+
+// ListVolumes 는 "zfs list -H -o name,used,avail,refer -t volume" 명령으로
+// ZFS 볼륨 목록을 조회한다. pool이 빈 문자열이 아니면 해당 풀로 필터링한다.
+// 에러 조건: zfs 명령 실행 실패
+// 부작용: 없음 (읽기 전용)
+func (d *ZFSDriver) ListVolumes(pool string) ([]Volume, error) {
+	args := []string{"list", "-H", "-o", "name,used,avail,refer", "-t", "volume"}
+	if pool != "" {
+		args = append(args, "-r", pool)
+	}
+
+	out, err := exec.Command("zfs", args...).Output()
+	if err != nil {
+		return nil, fmt.Errorf("zfs list volumes: %w", err)
+	}
+
+	var volumes []Volume
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 4 {
+			continue
+		}
+		fullName := fields[0]
+		nameParts := strings.SplitN(fullName, "/", 2)
+		volPool := nameParts[0]
+		volName := ""
+		if len(nameParts) > 1 {
+			volName = nameParts[1]
+		}
+		volumes = append(volumes, Volume{
+			ID:        fullName,
+			Pool:      volPool,
+			Name:      volName,
+			SizeBytes: parseSize(fields[3]), // refer = logical size
+			Format:    "zvol",
+			Path:      fmt.Sprintf("/dev/zvol/%s", fullName),
+			CreatedAt: time.Now().Unix(),
+		})
+	}
+	return volumes, nil
+}
+
 // parseSize 는 ZFS 크기 문자열을 바이트 단위로 변환한다.
 // 예: "1.5T" → 1649267441664, "500G" → 536870912000, "100M" → 104857600
 // 지원 단위: K, M, G, T, P (1024 기반)

@@ -18,6 +18,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -54,6 +55,23 @@ type VersionInfo struct {
 	VMCore    string `json:"vmcore_version"`
 }
 
+// AuthServices — JWT 인증 서비스와 사용자 DB를 집약한 구조체.
+//
+// 필드가 nil이면 인증 관련 엔드포인트(/api/v1/auth/*)가 등록되지 않는다.
+// Controller main.go에서 UserDB 초기화 성공 시에만 생성된다.
+type AuthServices struct {
+	UserDB     *auth.UserDB
+	JWTService *auth.JWTService
+}
+
+// HAServices 는 HA 프로덕션 기능 (리더 선출, 분산 잠금, 장애 복구)을 집약한다.
+// 모든 필드는 nil 허용이며, nil인 경우 해당 기능이 비활성화된다.
+type HAServices struct {
+	LeaderElection  *ha.LeaderElection
+	LockManager     *ha.LockManager
+	FailoverManager *ha.FailoverManager
+}
+
 // Services — API 레이어가 사용하는 모든 백엔드 서비스를 집약한 구조체.
 //
 // 각 서비스가 nil이면 해당 기능의 엔드포인트가 등록되지 않는다.
@@ -69,6 +87,9 @@ type Services struct {
 	Template   *template.Service
 	Snapshot   *snapshot.Service
 	Image      *image.Service
+	LXC        *compute.LXCBackend
+	Auth       *AuthServices
+	HAServices *HAServices
 	Version    VersionInfo
 	EventHub   *EventHub
 }
@@ -113,8 +134,12 @@ func NewRouter(svc *Services, rbacUsers ...map[string]auth.RBACUser) http.Handle
 		mux.HandleFunc("POST /api/v1/vms/{id}/pause", svc.handleVMAction("pause"))
 		mux.HandleFunc("POST /api/v1/vms/{id}/resume", svc.handleVMAction("resume"))
 		mux.HandleFunc("POST /api/v1/vms/{id}/migrate", svc.handleMigrateVM)
+		mux.HandleFunc("GET /api/v1/vms/{id}/migration", svc.handleGetMigrationStatus)
+		mux.HandleFunc("GET /api/v1/vms/{id}/stats", svc.handleVMStats)
+		mux.HandleFunc("POST /api/v1/vms/{id}/exec", svc.handleContainerExec)
 		mux.HandleFunc("GET /api/v1/nodes", handleListNodes)
 		mux.HandleFunc("GET /api/v1/backends", svc.handleListBackends)
+		mux.HandleFunc("GET /api/v1/templates/lxc", svc.handleLXCTemplates)
 
 		// Storage
 		mux.HandleFunc("GET /api/v1/storage/pools", svc.handleStoragePools)
@@ -122,8 +147,15 @@ func NewRouter(svc *Services, rbacUsers ...map[string]auth.RBACUser) http.Handle
 		mux.HandleFunc("POST /api/v1/storage/volumes", svc.handleCreateVolume)
 		mux.HandleFunc("DELETE /api/v1/storage/volumes/{id}", svc.handleDeleteVolume)
 
+		// Storage Snapshots
+		mux.HandleFunc("POST /api/v1/storage/snapshots/{id}/rollback", svc.handleStorageSnapshotRollback)
+		mux.HandleFunc("POST /api/v1/storage/snapshots/{id}/clone", svc.handleStorageSnapshotClone)
+		mux.HandleFunc("DELETE /api/v1/storage/snapshots/{id}", svc.handleDeleteStorageSnapshot)
+
 		// Network
 		mux.HandleFunc("GET /api/v1/network/zones", svc.handleNetworkZones)
+		mux.HandleFunc("POST /api/v1/network/zones", svc.handleCreateZone)
+		mux.HandleFunc("DELETE /api/v1/network/zones/{name}", svc.handleDeleteZone)
 		mux.HandleFunc("GET /api/v1/network/vnets", svc.handleNetworkVNets)
 		mux.HandleFunc("GET /api/v1/network/firewall", svc.handleFirewallRules)
 
@@ -136,6 +168,8 @@ func NewRouter(svc *Services, rbacUsers ...map[string]auth.RBACUser) http.Handle
 		mux.HandleFunc("GET /api/v1/cluster/status", svc.handleClusterStatus)
 		mux.HandleFunc("GET /api/v1/cluster/nodes", svc.handleClusterNodes)
 		mux.HandleFunc("POST /api/v1/cluster/fence/{node}", svc.handleFenceNode)
+		mux.HandleFunc("GET /api/v1/cluster/leader", svc.handleClusterLeader)
+		mux.HandleFunc("POST /api/v1/cluster/promote", svc.handleClusterPromote)
 
 		// Backup
 		if svc.Backup != nil {
@@ -183,6 +217,16 @@ func NewRouter(svc *Services, rbacUsers ...map[string]auth.RBACUser) http.Handle
 		// WebSocket
 		if svc.EventHub != nil {
 			mux.HandleFunc("GET /ws", svc.EventHub.HandleWS)
+		}
+
+		// Auth endpoints (JWT login/refresh/logout + user management)
+		if svc.Auth != nil {
+			mux.HandleFunc("POST /api/v1/auth/login", svc.handleAuthLogin)
+			mux.HandleFunc("POST /api/v1/auth/refresh", svc.handleAuthRefresh)
+			mux.HandleFunc("POST /api/v1/auth/logout", svc.handleAuthLogout)
+			mux.HandleFunc("GET /api/v1/auth/users", svc.handleAuthListUsers)
+			mux.HandleFunc("POST /api/v1/auth/users", svc.handleAuthCreateUser)
+			mux.HandleFunc("DELETE /api/v1/auth/users/{username}", svc.handleAuthDeleteUser)
 		}
 	}
 
@@ -235,12 +279,22 @@ func NewRouter(svc *Services, rbacUsers ...map[string]auth.RBACUser) http.Handle
 		}
 	}
 
+	// 7.5 Security Headers: X-Content-Type-Options, X-Frame-Options, X-XSS-Protection
+	handler = auth.SecurityHeadersMiddleware(handler)
+
 	// 7. CORS: Cross-Origin 요청 허용 + OPTIONS preflight 처리
 	handler = corsMiddleware(handler)
 
-	// 6. RBAC: Basic Auth 기반 역할 검증 (설정된 경우만 활성화)
+	// 6. RBAC: JWT Bearer / Basic Auth / Legacy 역할 검증 (설정된 경우만 활성화)
 	if len(rbacUsers) > 0 && rbacUsers[0] != nil {
-		handler = auth.RBACMiddleware(rbacUsers[0])(handler)
+		var rbacCfg *auth.RBACConfig
+		if svc != nil && svc.Auth != nil {
+			rbacCfg = &auth.RBACConfig{
+				JWTService: svc.Auth.JWTService,
+				UserDB:     svc.Auth.UserDB,
+			}
+		}
+		handler = auth.RBACMiddleware(rbacUsers[0], rbacCfg)(handler)
 	}
 
 	// 5. Metrics: Prometheus 메트릭 수집 (hcv_api_requests_total 등)
@@ -338,8 +392,25 @@ func (svc *Services) handleVersion(w http.ResponseWriter, _ *http.Request) {
 
 // handleListVMs — VM 목록을 반환한다 (GET /api/v1/vms).
 // offset/limit 쿼리 파라미터로 페이지네이션을 지원한다.
+// type 쿼리 파라미터로 "vm" 또는 "container"를 필터링할 수 있다.
 func (svc *Services) handleListVMs(w http.ResponseWriter, r *http.Request) {
 	vms := svc.Compute.ListVMs()
+
+	// Filter by type if specified
+	if typeFilter := r.URL.Query().Get("type"); typeFilter != "" {
+		filtered := make([]*compute.VMInfo, 0)
+		for _, vm := range vms {
+			vmType := vm.Type
+			if vmType == "" {
+				vmType = "vm" // default for backward compat
+			}
+			if vmType == typeFilter {
+				filtered = append(filtered, vm)
+			}
+		}
+		vms = filtered
+	}
+
 	offset, limit := parsePagination(r)
 	total := len(vms)
 	if offset > total {
@@ -353,15 +424,19 @@ func (svc *Services) handleListVMs(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleCreateVM — 새 VM을 생성한다 (POST /api/v1/vms).
-// 요청 본문: {"name": "...", "vcpus": N, "memory_mb": N, "backend": "rustvmm|qemu"}
+// 요청 본문: {"name": "...", "vcpus": N, "memory_mb": N, "backend": "rustvmm|qemu|lxc", "type": "vm|container", "template": "ubuntu|alpine|..."}
+// type이 "container"이면 lxc 백엔드를 자동 선택한다.
 // backend가 비어 있으면 BackendSelector가 자동 선택한다.
 // 성공 시 201 Created + 생성된 VM 정보를 반환한다.
 func (svc *Services) handleCreateVM(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name     string `json:"name"`
-		VCPUs    uint32 `json:"vcpus"`
-		MemoryMB uint64 `json:"memory_mb"`
-		Backend  string `json:"backend"`
+		Name          string `json:"name"`
+		VCPUs         uint32 `json:"vcpus"`
+		MemoryMB      uint64 `json:"memory_mb"`
+		Backend       string `json:"backend"`
+		Type          string `json:"type"`
+		Template      string `json:"template"`
+		RestartPolicy string `json:"restart_policy"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", err.Error())
@@ -377,11 +452,28 @@ func (svc *Services) handleCreateVM(w http.ResponseWriter, r *http.Request) {
 		req.MemoryMB = 512
 	}
 
-	vm, err := svc.Compute.CreateVM(req.Name, req.VCPUs, req.MemoryMB, req.Backend)
+	// If type is "container", auto-select lxc backend
+	backendHint := req.Backend
+	if req.Type == "container" && backendHint == "" {
+		backendHint = "lxc"
+	}
+
+	vm, err := svc.Compute.CreateVM(req.Name, req.VCPUs, req.MemoryMB, backendHint)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, ErrCodeInternal, err.Error())
 		return
 	}
+
+	// Set restart policy if specified (default is "always")
+	if req.RestartPolicy != "" {
+		vm.RestartPolicy = req.RestartPolicy
+	}
+
+	// Set template if specified (for LXC containers)
+	if req.Template != "" {
+		vm.Template = req.Template
+	}
+
 	writeJSON(w, http.StatusCreated, vm)
 }
 
@@ -466,6 +558,121 @@ func (svc *Services) handleMigrateVM(w http.ResponseWriter, r *http.Request) {
 func (svc *Services) handleListBackends(w http.ResponseWriter, _ *http.Request) {
 	backends := svc.Compute.ListBackends()
 	writeJSON(w, http.StatusOK, backends)
+}
+
+// handleGetMigrationStatus — VM 마이그레이션 상태를 조회한다 (GET /api/v1/vms/{id}/migration).
+func (svc *Services) handleGetMigrationStatus(w http.ResponseWriter, r *http.Request) {
+	handle, err := parseVMID(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, ErrCodeBadRequest, err.Error())
+		return
+	}
+	status, err := svc.Compute.GetMigrationStatus(handle)
+	if err != nil {
+		writeError(w, http.StatusNotFound, ErrCodeNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
+// handleVMStats — VM/컨테이너 리소스 사용량 통계를 반환한다 (GET /api/v1/vms/{id}/stats).
+// LXC 컨테이너의 경우 cgroup v2 기반 통계를, VM의 경우 플레이스홀더를 반환한다.
+func (svc *Services) handleVMStats(w http.ResponseWriter, r *http.Request) {
+	handle, err := parseVMID(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, ErrCodeBadRequest, err.Error())
+		return
+	}
+
+	vm, err := svc.Compute.GetVM(handle)
+	if err != nil {
+		writeError(w, http.StatusNotFound, ErrCodeNotFound, err.Error())
+		return
+	}
+
+	// LXC container stats
+	if vm.Backend == "lxc" && svc.LXC != nil {
+		stats, err := svc.LXC.GetContainerStats(handle)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, ErrCodeInternal, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, stats)
+		return
+	}
+
+	// VM stats placeholder
+	writeJSON(w, http.StatusOK, &compute.ContainerStats{
+		CPUUsageNs:       int64(vm.VCPUs) * 1_000_000_000,
+		MemoryUsageBytes: int64(vm.MemoryMB) * 512 * 1024,
+		MemoryLimitBytes: int64(vm.MemoryMB) * 1024 * 1024,
+		PIDCount:         1,
+		NetRxBytes:       0,
+		NetTxBytes:       0,
+	})
+}
+
+// handleContainerExec — 컨테이너 내에서 명령을 실행한다 (POST /api/v1/vms/{id}/exec).
+// 요청 본문: {"command": ["ls", "-la"]}
+// 응답: {"output": "..."} 또는 에러
+// LXC 컨테이너만 지원한다.
+func (svc *Services) handleContainerExec(w http.ResponseWriter, r *http.Request) {
+	handle, err := parseVMID(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, ErrCodeBadRequest, err.Error())
+		return
+	}
+
+	vm, err := svc.Compute.GetVM(handle)
+	if err != nil {
+		writeError(w, http.StatusNotFound, ErrCodeNotFound, err.Error())
+		return
+	}
+
+	if vm.Type != "container" {
+		writeError(w, http.StatusBadRequest, ErrCodeBadRequest, "exec is only supported for containers")
+		return
+	}
+
+	var req struct {
+		Command []string `json:"command"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body")
+		return
+	}
+	if len(req.Command) == 0 {
+		writeError(w, http.StatusBadRequest, ErrCodeBadRequest, "command is required")
+		return
+	}
+
+	if svc.LXC == nil {
+		writeError(w, http.StatusInternalServerError, ErrCodeInternal, "LXC backend not available")
+		return
+	}
+
+	output, err := svc.LXC.ExecContainer(handle, req.Command)
+	if err != nil {
+		if isStateError(err) {
+			writeError(w, http.StatusConflict, ErrCodeConflict, err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, ErrCodeInternal, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"output": output})
+}
+
+// handleLXCTemplates — 사용 가능한 LXC 배포 템플릿 목록을 반환한다 (GET /api/v1/templates/lxc).
+func (svc *Services) handleLXCTemplates(w http.ResponseWriter, _ *http.Request) {
+	templates := []string{"ubuntu", "alpine", "debian", "centos"}
+	if svc.LXC != nil {
+		templates = svc.LXC.AvailableTemplates()
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"templates": templates,
+	})
 }
 
 // ── Stub Handlers (no compute service) ───────────────────
@@ -584,6 +791,54 @@ func (svc *Services) handleDeleteVolume(w http.ResponseWriter, r *http.Request) 
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// ── Storage Snapshot Handlers ─────────────────────────
+
+// handleStorageSnapshotRollback — 스토리지 스냅샷을 롤백한다 (POST /api/v1/storage/snapshots/{id}/rollback).
+// 볼륨을 스냅샷 시점의 상태로 되돌린다.
+func (svc *Services) handleStorageSnapshotRollback(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := svc.Storage.RollbackSnapshot(id); err != nil {
+		writeError(w, http.StatusNotFound, ErrCodeNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "rolled back", "snapshot_id": id})
+}
+
+// handleStorageSnapshotClone — 스토리지 스냅샷에서 새 볼륨을 복제한다 (POST /api/v1/storage/snapshots/{id}/clone).
+// 요청 본문: {"name": "새볼륨이름"}
+// 성공 시 201 Created + 복제된 볼륨 정보를 반환한다.
+func (svc *Services) handleStorageSnapshotClone(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", err.Error())
+		return
+	}
+	if req.Name == "" {
+		writeError(w, http.StatusBadRequest, ErrCodeBadRequest, "name is required")
+		return
+	}
+	vol, err := svc.Storage.CloneSnapshot(id, req.Name)
+	if err != nil {
+		writeError(w, http.StatusNotFound, ErrCodeNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, vol)
+}
+
+// handleDeleteStorageSnapshot — 스토리지 스냅샷을 삭제한다 (DELETE /api/v1/storage/snapshots/{id}).
+// 성공 시 204 No Content를 반환한다.
+func (svc *Services) handleDeleteStorageSnapshot(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := svc.Storage.DeleteSnapshot(id); err != nil {
+		writeError(w, http.StatusNotFound, ErrCodeNotFound, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // ── Network Handlers ─────────────────────────────────
 
 func (svc *Services) handleNetworkZones(w http.ResponseWriter, _ *http.Request) {
@@ -601,6 +856,71 @@ func (svc *Services) handleNetworkVNets(w http.ResponseWriter, r *http.Request) 
 
 func (svc *Services) handleFirewallRules(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, svc.Network.ListFirewallRules())
+}
+
+// handleCreateZone — 새 SDN 존을 생성한다 (POST /api/v1/network/zones).
+// 요청 본문: {"name": "...", "type": "vxlan|vlan|simple", "bridge": "...", "mtu": N}
+// 성공 시 201 Created + 생성된 존 정보를 반환한다.
+func (svc *Services) handleCreateZone(w http.ResponseWriter, r *http.Request) {
+	if svc.Network == nil {
+		writeError(w, http.StatusInternalServerError, ErrCodeInternal, "network service not available")
+		return
+	}
+	var req struct {
+		Name   string `json:"name"`
+		Type   string `json:"type"`
+		Bridge string `json:"bridge"`
+		MTU    int    `json:"mtu"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", err.Error())
+		return
+	}
+	if req.Name == "" {
+		writeError(w, http.StatusBadRequest, ErrCodeBadRequest, "name is required")
+		return
+	}
+	if req.Type == "" {
+		req.Type = "simple"
+	}
+	zone := &network.Zone{
+		Name:     req.Name,
+		ZoneType: req.Type,
+		Bridge:   req.Bridge,
+		MTU:      req.MTU,
+	}
+	if err := svc.Network.CreateZone(zone); err != nil {
+		if strings.Contains(err.Error(), "already exists") {
+			writeError(w, http.StatusConflict, ErrCodeConflict, err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, ErrCodeInternal, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, zone)
+}
+
+// handleDeleteZone — SDN 존을 삭제한다 (DELETE /api/v1/network/zones/{name}).
+// 성공 시 204 No Content를 반환한다.
+func (svc *Services) handleDeleteZone(w http.ResponseWriter, r *http.Request) {
+	if svc.Network == nil {
+		writeError(w, http.StatusInternalServerError, ErrCodeInternal, "network service not available")
+		return
+	}
+	name := r.PathValue("name")
+	if name == "" {
+		writeError(w, http.StatusBadRequest, ErrCodeBadRequest, "zone name is required")
+		return
+	}
+	if err := svc.Network.DeleteZone(name); err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			writeError(w, http.StatusNotFound, ErrCodeNotFound, err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, ErrCodeInternal, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // ── Peripheral Handlers ──────────────────────────────
@@ -667,6 +987,69 @@ func (svc *Services) handleFenceNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, event)
+}
+
+// handleClusterLeader — 현재 클러스터 리더 정보를 반환한다 (GET /api/v1/cluster/leader).
+//
+// 응답: {"leader": "node-01", "is_self": true}
+// HAServices.LeaderElection이 nil이면 단일 노드 모드로 동작하여
+// 현재 노드 이름을 리더로 반환한다.
+func (svc *Services) handleClusterLeader(w http.ResponseWriter, _ *http.Request) {
+	leader := "unknown"
+	isSelf := false
+
+	if svc.HAServices != nil && svc.HAServices.LeaderElection != nil {
+		le := svc.HAServices.LeaderElection
+		if l, err := le.GetLeader(); err == nil {
+			leader = l
+		}
+		isSelf = le.IsLeader()
+	} else {
+		// Single-node mode
+		leader = ha.GetNodeName()
+		isSelf = true
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"leader":  leader,
+		"is_self": isSelf,
+	})
+}
+
+// handleClusterPromote — 리더 재선출을 트리거한다 (POST /api/v1/cluster/promote).
+//
+// 현재 리더십을 사임(Resign)한 후 즉시 재선출(Campaign)을 시도한다.
+// 다중 노드 환경에서 리더를 의도적으로 변경할 때 사용한다.
+// 단일 노드 모드에서는 "single-node" 상태를 반환한다.
+func (svc *Services) handleClusterPromote(w http.ResponseWriter, _ *http.Request) {
+	if svc.HAServices == nil || svc.HAServices.LeaderElection == nil {
+		writeJSON(w, http.StatusOK, map[string]string{
+			"status":  "single-node",
+			"message": "leader election not configured",
+		})
+		return
+	}
+
+	le := svc.HAServices.LeaderElection
+
+	// Resign current leadership to trigger re-election
+	if err := le.Resign(); err != nil {
+		writeError(w, http.StatusInternalServerError, ErrCodeInternal,
+			fmt.Sprintf("resign failed: %v", err))
+		return
+	}
+
+	// Re-campaign
+	if err := le.Campaign(context.Background()); err != nil {
+		writeError(w, http.StatusInternalServerError, ErrCodeInternal,
+			fmt.Sprintf("re-election failed: %v", err))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{
+		"status":  "re-election triggered",
+		"message": "leadership resigned, re-election in progress",
+	})
 }
 
 func handleStubList(name string) http.HandlerFunc {

@@ -6,6 +6,7 @@
 package ha
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -86,7 +87,8 @@ func (d *MemoryDriver) ListNodes() ([]*ClusterNode, error) {
 	defer d.mu.RUnlock()
 	result := make([]*ClusterNode, 0, len(d.nodes))
 	for _, n := range d.nodes {
-		result = append(result, n)
+		cp := *n
+		result = append(result, &cp)
 	}
 	return result, nil
 }
@@ -126,4 +128,23 @@ func (d *MemoryDriver) ListFenceEvents() ([]FenceEvent, error) {
 	result := make([]FenceEvent, len(d.fenceEvents))
 	copy(result, d.fenceEvents)
 	return result, nil
+}
+
+// IsLeader 는 단일 노드 모드에서 항상 true를 반환한다.
+func (d *MemoryDriver) IsLeader() bool {
+	return true
+}
+
+// GetLeader 는 단일 노드 모드에서 "self"를 반환한다.
+func (d *MemoryDriver) GetLeader() (string, error) {
+	return "self", nil
+}
+
+// WatchNodes 는 인메모리 모드에서 no-op이다.
+// 컨텍스트가 취소될 때까지 대기하는 고루틴을 시작한다.
+func (d *MemoryDriver) WatchNodes(ctx context.Context, callback func(nodeName, status string)) error {
+	go func() {
+		<-ctx.Done()
+	}()
+	return nil
 }

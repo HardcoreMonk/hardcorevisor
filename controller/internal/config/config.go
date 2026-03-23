@@ -20,6 +20,7 @@ package config
 
 import (
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -63,15 +64,37 @@ type EtcdConfig struct {
 	Endpoints string `yaml:"endpoints"` // comma-separated
 }
 
+// GetEndpoints 는 쉼표로 구분된 엔드포인트 문자열을 슬라이스로 반환한다.
+// 빈 문자열이면 nil 슬라이스를 반환한다.
+func (c EtcdConfig) GetEndpoints() []string {
+	if c.Endpoints == "" {
+		return nil
+	}
+	parts := strings.Split(c.Endpoints, ",")
+	endpoints := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			endpoints = append(endpoints, p)
+		}
+	}
+	if len(endpoints) == 0 {
+		return nil
+	}
+	return endpoints
+}
+
 // TLSConfig 는 TLS 인증서 경로를 보관한다.
 type TLSConfig struct {
 	CertFile string `yaml:"cert_file"`
 	KeyFile  string `yaml:"key_file"`
 }
 
-// AuthConfig 는 RBAC 사용자 정의를 보관한다.
+// AuthConfig 는 RBAC 사용자 정의와 JWT 설정을 보관한다.
 type AuthConfig struct {
-	Users string `yaml:"users"` // user:pass:role,...
+	Users     string `yaml:"users"`      // user:pass:role,... (legacy)
+	JWTSecret string `yaml:"jwt_secret"` // JWT signing secret (auto-generated if empty)
+	DBPath    string `yaml:"db_path"`    // SQLite user database path (default: "hcv.db")
 }
 
 // LogConfig 는 로깅 설정을 보관한다.
@@ -86,6 +109,7 @@ func DefaultConfig() *Config {
 	return &Config{
 		API:  APIConfig{Addr: ":8080"},
 		GRPC: GRPCConfig{Addr: ":9090"},
+		Auth: AuthConfig{DBPath: "hcv.db"},
 		Log:  LogConfig{Level: "info", Format: "text"},
 	}
 }
@@ -146,6 +170,12 @@ func Load(path string) (*Config, error) {
 	}
 	if v := os.Getenv("HCV_CEPH_POOL"); v != "" {
 		cfg.Storage.CephPool = v
+	}
+	if v := os.Getenv("HCV_JWT_SECRET"); v != "" {
+		cfg.Auth.JWTSecret = v
+	}
+	if v := os.Getenv("HCV_DB_PATH"); v != "" {
+		cfg.Auth.DBPath = v
 	}
 
 	return cfg, nil

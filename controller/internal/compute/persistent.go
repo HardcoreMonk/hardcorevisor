@@ -105,6 +105,11 @@ func (p *PersistentComputeService) ListBackends() []BackendInfo {
 	return p.inner.ListBackends()
 }
 
+// GetMigrationStatus delegates to the inner service.
+func (p *PersistentComputeService) GetMigrationStatus(handle int32) (*MigrationStatus, error) {
+	return p.inner.GetMigrationStatus(handle)
+}
+
 // MigrateVM delegates to the inner service, then persists the updated VM state.
 func (p *PersistentComputeService) MigrateVM(handle int32, targetNode string) error {
 	if err := p.inner.MigrateVM(handle, targetNode); err != nil {

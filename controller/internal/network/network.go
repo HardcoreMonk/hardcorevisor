@@ -136,3 +136,19 @@ func (s *Service) CreateFirewallRule(direction, action, protocol, source, dest, 
 func (s *Service) DeleteFirewallRule(id string) error {
 	return s.driver.DeleteFirewallRule(id)
 }
+
+// CreateZone 은 새 SDN 존을 생성한다.
+//
+// 호출 시점: REST POST /api/v1/network/zones
+// 동시 호출 안전성: 안전 (드라이버 내부 Lock)
+func (s *Service) CreateZone(zone *Zone) error {
+	return s.driver.CreateZone(zone)
+}
+
+// DeleteZone 은 이름으로 SDN 존을 삭제한다.
+//
+// 호출 시점: REST DELETE /api/v1/network/zones/{name}
+// 동시 호출 안전성: 안전 (드라이버 내부 Lock)
+func (s *Service) DeleteZone(name string) error {
+	return s.driver.DeleteZone(name)
+}

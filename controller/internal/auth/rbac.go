@@ -1,7 +1,7 @@
 // Package auth — RBAC 접근 제어 + 감사 로깅 미들웨어
 //
 // 아키텍처 위치: HTTP 미들웨어 체인의 일부
-//   RequestID → Audit → Logging → Metrics → RBAC → CORS → Recovery → Handler
+//   RequestID → Audit → Logging → Metrics → RBAC → Security → CORS → Recovery → Handler
 //
 // 역할 계층 (Role Hierarchy):
 //   - admin: 전체 권한 (모든 HTTP 메서드, 모든 경로)
@@ -11,12 +11,16 @@
 // 인증 없이 접근 가능한 경로:
 //   - /healthz: 헬스 체크
 //   - /metrics: Prometheus 메트릭
+//   - /api/v1/auth/login: JWT 로그인 (인증 전 접근 필요)
+//
+// 인증 방식 우선순위:
+//  1. Authorization: Bearer <JWT> — JWT 토큰 검증
+//  2. Authorization: Basic <base64> — UserDB(bcrypt) 검증
+//  3. Legacy: HCV_RBAC_USERS 환경변수 기반 평문 비밀번호 비교 (UserDB nil인 경우)
 //
 // 환경변수:
 //   - HCV_RBAC_USERS: 사용자 정의 ("user1:pass1:admin,user2:pass2:viewer")
 //   - 미설정 시 RBAC 비활성 (모든 요청 허용)
-//
-// 인증 방식: HTTP Basic Auth
 package auth
 
 import (
@@ -42,6 +46,15 @@ type RBACUser struct {
 	Role     Role
 }
 
+// RBACConfig holds optional dependencies for the RBAC middleware.
+// When JWTService and/or UserDB are provided, they are used for
+// Bearer and Basic Auth respectively. Otherwise, the legacy
+// plaintext user map is used.
+type RBACConfig struct {
+	JWTService *JWTService
+	UserDB     *UserDB
+}
+
 // HasPermission 은 역할이 지정된 HTTP 메서드와 경로에 접근 가능한지 확인한다.
 //
 // 역할별 권한:
@@ -55,9 +68,6 @@ func HasPermission(role Role, method, path string) bool {
 	case RoleAdmin:
 		return true
 	case RoleOperator:
-		// Operators can read and write but not delete cluster/fence operations
-		// are admin-only. For simplicity: operator = GET + POST + PUT + DELETE
-		// except cluster fence.
 		if method == http.MethodGet {
 			return true
 		}
@@ -75,35 +85,70 @@ func HasPermission(role Role, method, path string) bool {
 // RBACMiddleware 는 역할 기반 접근 제어를 적용하는 미들웨어를 반환한다.
 //
 // 처리 순서:
-//  1. /healthz, /metrics 경로는 인증 없이 통과
-//  2. Basic Auth 헤더에서 사용자 정보 추출
-//  3. 사용자 조회 및 비밀번호 확인 (실패 시 401)
+//  1. /healthz, /metrics, /api/v1/auth/login 경로는 인증 없이 통과
+//  2. Authorization: Bearer 헤더가 있으면 JWT 토큰 검증 (JWTService 필요)
+//  3. Authorization: Basic 헤더가 있으면 UserDB(bcrypt) 검증, 없으면 레거시 평문 비교
 //  4. HasPermission으로 권한 확인 (실패 시 403)
-//
-// 호출 시점: API 라우터 초기화 시 미들웨어 체인에 등록
-func RBACMiddleware(users map[string]RBACUser) func(http.Handler) http.Handler {
+func RBACMiddleware(users map[string]RBACUser, cfgs ...*RBACConfig) func(http.Handler) http.Handler {
+	var cfg *RBACConfig
+	if len(cfgs) > 0 {
+		cfg = cfgs[0]
+	}
+
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Skip auth for healthz and metrics
-			if r.URL.Path == "/healthz" || r.URL.Path == "/metrics" {
+			// Skip auth for healthz, metrics, and auth login
+			if r.URL.Path == "/healthz" || r.URL.Path == "/metrics" || r.URL.Path == "/api/v1/auth/login" {
 				next.ServeHTTP(w, r)
 				return
 			}
 
-			username, password, ok := r.BasicAuth()
-			if !ok {
-				w.Header().Set("WWW-Authenticate", `Basic realm="hardcorevisor"`)
+			var role Role
+			authenticated := false
+
+			authHeader := r.Header.Get("Authorization")
+
+			// 1. Try JWT Bearer token
+			if cfg != nil && cfg.JWTService != nil && strings.HasPrefix(authHeader, "Bearer ") {
+				tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
+				claims, err := cfg.JWTService.ValidateToken(tokenStr)
+				if err == nil {
+					role = Role(claims.Role)
+					authenticated = true
+				}
+			}
+
+			// 2. Try Basic Auth
+			if !authenticated {
+				username, password, ok := r.BasicAuth()
+				if ok {
+					// 2a. Try UserDB (bcrypt) if available
+					if cfg != nil && cfg.UserDB != nil {
+						user, err := cfg.UserDB.VerifyPassword(username, password)
+						if err == nil {
+							role = Role(user.Role)
+							authenticated = true
+						}
+					}
+
+					// 2b. Legacy plaintext fallback (when UserDB is nil)
+					if !authenticated && users != nil {
+						user, exists := users[username]
+						if exists && user.Password == password {
+							role = user.Role
+							authenticated = true
+						}
+					}
+				}
+			}
+
+			if !authenticated {
+				w.Header().Set("WWW-Authenticate", `Bearer realm="hardcorevisor", Basic realm="hardcorevisor"`)
 				http.Error(w, `{"error":"authentication required"}`, http.StatusUnauthorized)
 				return
 			}
 
-			user, exists := users[username]
-			if !exists || user.Password != password {
-				http.Error(w, `{"error":"invalid credentials"}`, http.StatusUnauthorized)
-				return
-			}
-
-			if !HasPermission(user.Role, r.Method, r.URL.Path) {
+			if !HasPermission(role, r.Method, r.URL.Path) {
 				http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
 				return
 			}
@@ -111,6 +156,21 @@ func RBACMiddleware(users map[string]RBACUser) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// SecurityHeadersMiddleware sets security-related HTTP response headers.
+//
+// Headers set:
+//   - X-Content-Type-Options: nosniff
+//   - X-Frame-Options: DENY
+//   - X-XSS-Protection: 1; mode=block
+func SecurityHeadersMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("X-XSS-Protection", "1; mode=block")
+		next.ServeHTTP(w, r)
+	})
 }
 
 // LoadUsers 는 HCV_RBAC_USERS 환경변수에서 RBAC 사용자를 읽는다.

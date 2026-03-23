@@ -127,3 +127,66 @@ func (d *CephDriver) ListSnapshots(volumeID string) ([]*Snapshot, error) {
 	// rbd snap ls <pool>/<volume>
 	return nil, nil
 }
+
+// RollbackSnapshot 은 "rbd snap rollback <snapshotID>" 명령으로 Ceph RBD 스냅샷을 롤백한다.
+// 볼륨이 스냅샷 시점의 상태로 되돌아간다.
+//
+// 매개변수:
+//   - snapshotID: 롤백할 스냅샷 ID (형식: "pool/volume@snapname")
+//
+// 에러 조건: 스냅샷 미존재, Ceph 클러스터 연결 실패, 권한 부족
+// 부작용: 실제 RBD 이미지 데이터가 스냅샷 시점으로 변경됨 (복구 불가)
+// TODO: snapshotID를 "pool/volume@snap" 형식으로 변환하는 매핑 로직 추가
+func (d *CephDriver) RollbackSnapshot(snapshotID string) error {
+	cmd := exec.Command("rbd", "snap", "rollback", snapshotID)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("rbd snap rollback: %s: %w", string(out), err)
+	}
+	return nil
+}
+
+// CloneSnapshot 은 "rbd clone <snapshotID> <pool>/<newVolumeName>" 명령으로
+// Ceph RBD 스냅샷에서 새 이미지를 클론한다.
+//
+// Ceph의 COW(Copy-On-Write) 클론을 사용하므로 초기 복제가 매우 빠르다.
+// 클론된 이미지는 원본 스냅샷에 의존하므로, 스냅샷 삭제 전에 flatten이 필요하다.
+//
+// 매개변수:
+//   - snapshotID: 원본 스냅샷 ID
+//   - newVolumeName: 새 볼륨 이름
+//
+// 에러 조건: 스냅샷 미존재, 대상 이름 중복, Ceph 클러스터 연결 실패
+// 부작용: 실제 RBD 클론 이미지 생성
+func (d *CephDriver) CloneSnapshot(snapshotID, newVolumeName string) (*Volume, error) {
+	newImg := fmt.Sprintf("%s/%s", d.pool, newVolumeName)
+	cmd := exec.Command("rbd", "clone", snapshotID, newImg)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("rbd clone: %s: %w", string(out), err)
+	}
+
+	d.mu.Lock()
+	id := fmt.Sprintf("ceph-vol-%d", d.nextVolID.Add(1)-1)
+	d.mu.Unlock()
+
+	return &Volume{
+		ID:   id,
+		Pool: d.pool,
+		Name: newVolumeName,
+		Path: fmt.Sprintf("rbd:%s", newImg),
+	}, nil
+}
+
+// DeleteSnapshot 은 "rbd snap rm <snapshotID>" 명령으로 Ceph RBD 스냅샷을 삭제한다.
+//
+// 매개변수:
+//   - snapshotID: 삭제할 스냅샷 ID
+//
+// 에러 조건: 스냅샷 미존재, 클론 의존성 (flatten 안 된 클론이 있으면 삭제 불가)
+// 부작용: 실제 RBD 스냅샷 삭제 (복구 불가)
+func (d *CephDriver) DeleteSnapshot(snapshotID string) error {
+	cmd := exec.Command("rbd", "snap", "rm", snapshotID)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("rbd snap rm: %s: %w", string(out), err)
+	}
+	return nil
+}
