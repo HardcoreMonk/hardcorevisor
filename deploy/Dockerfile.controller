@@ -2,7 +2,7 @@
 # Uses Mock FFI (no libvmcore.a dependency in container)
 # Serves REST :8080 + gRPC :9090
 
-FROM golang:1.23-bookworm AS builder
+FROM golang:1.25-bookworm AS builder
 
 WORKDIR /build
 COPY controller/go.mod controller/go.sum* ./
