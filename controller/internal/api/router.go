@@ -543,6 +543,18 @@ func (svc *Services) handleVMAction(action string) http.HandlerFunc {
 	}
 }
 
+// handleMigrateVM — VM 라이브 마이그레이션을 요청한다 (POST /api/v1/vms/{id}/migrate).
+//
+// 요청 본문: {"target_node": "node-02"}
+//
+// 동작 모드:
+//  1. TaskService가 있는 경우 (비동기): MigrateLive() + 태스크 추적 goroutine 생성
+//     → 202 Accepted {"task_id":"task-1", "status":"pending", "message":"..."}
+//     → 진행 상태는 GET /api/v1/tasks/{task_id} 로 폴링
+//  2. TaskService가 없는 경우 (동기 폴백): MigrateVM()으로 완료까지 대기
+//     → 200 OK {"status":"migrated", "message":"..."}
+//
+// 에러 응답: 400 (잘못된 요청), 404 (VM 미존재/상태 오류)
 func (svc *Services) handleMigrateVM(w http.ResponseWriter, r *http.Request) {
 	handle, err := parseVMID(r)
 	if err != nil {
@@ -561,7 +573,7 @@ func (svc *Services) handleMigrateVM(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// When TaskService is available, use async migration with task tracking
+	// TaskService가 있으면 비동기 마이그레이션 + 태스크 추적 사용
 	if svc.Task != nil {
 		if err := svc.Compute.MigrateLive(handle, req.TargetNode); err != nil {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
@@ -607,7 +619,15 @@ func (svc *Services) handleMigrateVM(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleCancelMigration — 진행 중인 마이그레이션을 취소한다 (DELETE /api/v1/vms/{id}/migration).
+// handleCancelMigration — 진행 중인 비동기 마이그레이션을 취소한다.
+//
+// DELETE /api/v1/vms/{id}/migration
+//
+// ComputeProvider.CancelMigration()을 호출하여 마이그레이션 goroutine의
+// context를 취소한다. 마이그레이션이 없으면 404를 반환한다.
+//
+// 성공 응답: 200 {"status":"cancelled", "message":"..."}
+// 에러 응답: 400 (잘못된 VM ID), 404 (마이그레이션 없음)
 func (svc *Services) handleCancelMigration(w http.ResponseWriter, r *http.Request) {
 	handle, err := parseVMID(r)
 	if err != nil {
@@ -813,7 +833,12 @@ func handleListNodes(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, nodes)
 }
 
-// handleGetNode — 이름으로 특정 노드를 조회한다 (GET /api/v1/nodes/{id}).
+// handleGetNode — 이름으로 특정 클러스터 노드를 조회한다 (GET /api/v1/nodes/{id}).
+//
+// 경로 파라미터: id — 노드 이름 (예: "node-01")
+// 응답: 200 OK + ClusterNode JSON
+// 에러 응답: 400 (이름 누락), 404 (HA 서비스 없음 또는 노드 미존재)
+// HA 서비스의 GetNode()에 위임하여 노드 정보를 조회한다.
 func (svc *Services) handleGetNode(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("id")
 	if name == "" {
@@ -835,11 +860,19 @@ func (svc *Services) handleGetNode(w http.ResponseWriter, r *http.Request) {
 // ── Task Handlers ───────────────────────────────────
 
 // handleListTasks — 태스크 목록을 조회한다 (GET /api/v1/tasks).
+//
+// 쿼리 파라미터:
+//   - type: 태스크 유형 필터 (예: "vm.migrate", 빈 문자열이면 전체)
+//   - status: 상태 필터 (예: "running", 빈 문자열이면 전체)
+//
+// 응답: 200 OK + TaskSnapshot 배열 JSON
+// 주의: Task 포인터를 직접 직렬화하면 race condition이 발생할 수 있으므로,
+// 반드시 Snapshot()으로 값 복사본을 생성한 후 직렬화한다.
 func (svc *Services) handleListTasks(w http.ResponseWriter, r *http.Request) {
 	typeFilter := r.URL.Query().Get("type")
 	statusFilter := r.URL.Query().Get("status")
 	tasks := svc.Task.ListTasks(typeFilter, statusFilter)
-	// Return snapshots to avoid race conditions during JSON serialization
+	// Snapshot으로 값 복사하여 JSON 직렬화 시 race condition 방지
 	result := make([]task.TaskSnapshot, 0, len(tasks))
 	for _, t := range tasks {
 		result = append(result, t.Snapshot())
@@ -848,6 +881,10 @@ func (svc *Services) handleListTasks(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleGetTask — ID로 태스크를 조회한다 (GET /api/v1/tasks/{id}).
+//
+// 경로 파라미터: id — 태스크 ID (예: "task-1")
+// 응답: 200 OK + TaskSnapshot JSON, 또는 404 (태스크 미존재)
+// Snapshot()으로 값 복사하여 race condition 방지.
 func (svc *Services) handleGetTask(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	t, err := svc.Task.GetTask(id)
@@ -860,6 +897,11 @@ func (svc *Services) handleGetTask(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleDeleteTask — 완료/실패 태스크를 삭제한다 (DELETE /api/v1/tasks/{id}).
+//
+// 경로 파라미터: id — 삭제할 태스크 ID (예: "task-1")
+// 성공 응답: 204 No Content
+// 에러 응답: 400 (태스크 미존재, 또는 진행 중 삭제 시도)
+// 주의: pending/running 상태의 태스크는 삭제할 수 없다.
 func (svc *Services) handleDeleteTask(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if err := svc.Task.DeleteTask(id); err != nil {

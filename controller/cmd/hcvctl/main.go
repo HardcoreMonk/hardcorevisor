@@ -512,7 +512,19 @@ To load fish completions:
 	}
 	containerCmd.AddCommand(ctExecCmd)
 
-	// ── gendoc subcommand — 문서 자동 생성 (man pages, markdown) ──
+	// ── gendoc subcommand — CLI 명령 트리에서 문서 자동 생성 ──
+	// Cobra의 doc 패키지를 사용하여 man pages 또는 markdown 문서를 생성한다.
+	// Hidden=true로 설정하여 일반 사용자에게는 노출되지 않는다 (개발/릴리즈용).
+	//
+	// 사용 예시:
+	//   hcvctl gendoc --type man --dir docs/man        # man pages 생성
+	//   hcvctl gendoc --type markdown --dir docs/cli    # markdown 문서 생성
+	//
+	// 플래그:
+	//   --type: 문서 형식 ("man" 또는 "markdown", 기본값: "man")
+	//   --dir: 출력 디렉터리 (기본값: "docs/man")
+	//
+	// 의존성: github.com/spf13/cobra/doc (GenManTree, GenMarkdownTree)
 	gendocCmd := &cobra.Command{
 		Use:    "gendoc",
 		Short:  "Generate documentation (man pages or markdown)",

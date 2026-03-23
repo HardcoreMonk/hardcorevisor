@@ -47,14 +47,22 @@ const (
 	PolicyLXC     = "lxc"     // LXC 백엔드 강제 사용 (컨테이너)
 )
 
-// MigrationPhase 상수 — 마이그레이션 단계
+// MigrationPhase 상수 — 라이브 마이그레이션의 각 단계를 나타낸다.
+//
+// 단계 진행 순서:
+//
+//	MigrationPending → MigrationPreCheck → MigrationTransfer → MigrationSwitchover → MigrationCompleted
+//	                                                                                → MigrationFailed
+//
+// 각 단계에서 context 취소(CancelMigration) 시 MigrationFailed로 전이된다.
+// MigrationStatus.Phase 필드에 저장되어 REST/gRPC 응답으로 반환된다.
 const (
-	MigrationPending    = "pending"
-	MigrationPreCheck   = "pre-check"
-	MigrationTransfer   = "transfer"
-	MigrationSwitchover = "switchover"
-	MigrationCompleted  = "completed"
-	MigrationFailed     = "failed"
+	MigrationPending    = "pending"    // 마이그레이션 요청됨, 아직 시작 전
+	MigrationPreCheck   = "pre-check"  // VM 상태 및 대상 노드 사전 검증 중
+	MigrationTransfer   = "transfer"   // 메모리/디스크 전송 중 (Progress 10→30→60→90)
+	MigrationSwitchover = "switchover" // 소스 일시정지 → 최종 동기화 → 노드 전환 (Progress 95)
+	MigrationCompleted  = "completed"  // 마이그레이션 성공 완료 (Progress 100)
+	MigrationFailed     = "failed"     // 마이그레이션 실패 또는 취소됨
 )
 
 // VMInfo — API 레이어에 노출되는 VM의 전체 상태.
@@ -526,10 +534,24 @@ func (cs *ComputeService) MigrateVM(handle int32, targetNode string) error {
 }
 
 // MigrateLive 은 비동기 라이브 마이그레이션을 goroutine에서 실행한다.
-// 진행 상태는 GetMigrationStatus()로 폴링할 수 있다.
-// CancelMigration()으로 취소할 수 있다.
 //
-// 호출 시점: REST POST /api/v1/vms/{id}/migrate (비동기 모드)
+// MigrateVM(동기)과 달리, 즉시 반환하고 백그라운드 goroutine에서 마이그레이션을 수행한다.
+// 진행 상태는 GetMigrationStatus()로 폴링할 수 있고,
+// CancelMigration()으로 context를 취소하여 중단할 수 있다.
+//
+// 처리 순서:
+//  1. 동기 사전 검증: VM 존재 여부, running 상태, 동일 노드 확인 (즉시 에러 반환)
+//  2. MigrationStatus 초기화 (pending), activeMigrations에 cancel 함수 등록
+//  3. goroutine 시작: doMigration() 실행 → 완료 시 activeMigrations에서 제거
+//
+// 매개변수:
+//   - handle: 마이그레이션할 VM ID
+//   - targetNode: 대상 노드 이름
+//
+// 에러 조건 (동기, 즉시 반환):
+//   - VM 미존재, VM이 running 상태가 아님, 대상=소스 노드
+//
+// 호출 시점: REST POST /api/v1/vms/{id}/migrate (TaskService가 있는 경우 비동기 모드)
 func (cs *ComputeService) MigrateLive(handle int32, targetNode string) error {
 	// Pre-validation (synchronous) so caller gets immediate error
 	backend, err := cs.findBackendForVM(handle)
@@ -579,8 +601,17 @@ func (cs *ComputeService) MigrateLive(handle int32, targetNode string) error {
 	return nil
 }
 
-// CancelMigration 은 진행 중인 마이그레이션을 취소한다.
-// 마이그레이션이 없으면 에러를 반환한다.
+// CancelMigration 은 진행 중인 비동기 마이그레이션을 취소한다.
+//
+// activeMigrations 맵에서 해당 VM의 cancel 함수를 찾아 호출한다.
+// cancel() 호출 시 doMigration 내부의 context.Done() 채널이 닫히고,
+// 다음 단계 전환 시점에서 MigrationFailed 상태로 전이된다.
+//
+// 매개변수:
+//   - handle: 마이그레이션 취소할 VM ID
+//
+// 에러 조건: 해당 VM에 진행 중인 마이그레이션이 없는 경우
+// 호출 시점: REST DELETE /api/v1/vms/{id}/migration (handleCancelMigration)
 func (cs *ComputeService) CancelMigration(handle int32) error {
 	cs.migrationsMu.Lock()
 	cancel, ok := cs.activeMigrations[handle]
@@ -593,7 +624,23 @@ func (cs *ComputeService) CancelMigration(handle int32) error {
 }
 
 // doMigration 은 마이그레이션의 실제 단계를 실행하는 내부 메서드이다.
-// context 취소 시 migration status를 failed로 설정한다.
+//
+// MigrateVM(동기)과 MigrateLive(비동기) 양쪽에서 호출된다.
+// context가 취소되면 다음 단계 전환 시점에서 MigrationFailed로 전이하고 에러를 반환한다.
+//
+// 마이그레이션 단계:
+//  1. PreCheck: VM running 확인, 대상 노드 ≠ 소스 노드 확인
+//  2. Transfer: 메모리 전송 시뮬레이션 (Emulated 모드: 5ms 간격으로 10→30→60→90%)
+//     - QEMU Real 모드: 여기서 QMP "migrate" 명령을 보냄 (향후 구현)
+//  3. Switchover: 소스 VM 일시정지, 최종 동기화, updateVMNode()으로 노드 전환
+//  4. Complete: Phase=completed, Progress=100, CompletedAt 설정
+//
+// 매개변수:
+//   - ctx: 취소 가능한 context (CancelMigration에서 cancel() 호출 시 Done)
+//   - handle: 마이그레이션 대상 VM ID
+//   - targetNode: 대상 노드 이름
+//
+// 에러 조건: VM 미존재, running 아님, 동일 노드, context 취소
 func (cs *ComputeService) doMigration(ctx context.Context, handle int32, targetNode string) error {
 	backend, err := cs.findBackendForVM(handle)
 	if err != nil {
@@ -722,7 +769,17 @@ func (cs *ComputeService) listBackends() []VMMBackend {
 }
 
 // updateVMNode 은 VM의 Node 필드를 안전하게 업데이트한다.
-// 백엔드의 내부 잠금을 사용하여 동시 읽기와의 race condition을 방지한다.
+//
+// 각 백엔드 타입(RustVMMBackend, QEMUBackend, LXCBackend)에 대해
+// 타입 어서션으로 내부 vms 맵에 직접 접근하여 Node 필드를 변경한다.
+// 백엔드의 내부 mu.Lock을 사용하여 동시 읽기와의 race condition을 방지한다.
+//
+// 매개변수:
+//   - handle: 대상 VM ID
+//   - node: 새 노드 이름
+//
+// 호출 시점: doMigration Phase 3 (Switchover)에서 노드 전환 시
+// 스레드 안전성: 안전 (각 백엔드의 mu.Lock 사용)
 func (cs *ComputeService) updateVMNode(handle int32, node string) {
 	for _, b := range cs.listBackends() {
 		switch backend := b.(type) {

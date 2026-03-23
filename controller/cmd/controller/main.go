@@ -191,6 +191,9 @@ func main() {
 		}
 	}
 	backupSvc := backup.NewService(storageSvc)
+	// 비동기 태스크 서비스 초기화 — 마이그레이션 등 장시간 작업의 진행 상태를 추적한다.
+	// 인메모리 저장이므로 Controller 재시작 시 태스크 기록이 초기화된다.
+	// Services.Task에 주입하여 API 핸들러(handleMigrateVM 등)에서 비동기 태스크 생성에 사용.
 	taskSvc := task.NewTaskService()
 
 	// ── JWT Auth + UserDB 초기화 (Phase 17) ──

@@ -127,12 +127,23 @@ func (p *PersistentComputeService) MigrateVM(handle int32, targetNode string) er
 	return nil
 }
 
-// MigrateLive delegates to the inner service for async migration.
+// MigrateLive 은 비동기 라이브 마이그레이션을 inner 서비스에 위임한다.
+//
+// MigrateVM(동기)과 달리 즉시 반환되므로, 완료 시점을 알 수 없어
+// 여기서는 Store 영속화를 하지 않는다. 마이그레이션 완료 후
+// 노드 변경은 inner의 updateVMNode()에서 인메모리로 반영된다.
+//
+// 호출 시점: REST POST /api/v1/vms/{id}/migrate (TaskService 사용 시 비동기 모드)
 func (p *PersistentComputeService) MigrateLive(handle int32, targetNode string) error {
 	return p.inner.MigrateLive(handle, targetNode)
 }
 
-// CancelMigration delegates to the inner service.
+// CancelMigration 은 진행 중인 마이그레이션 취소를 inner 서비스에 위임한다.
+//
+// inner의 CancelMigration()이 context cancel을 호출하여
+// doMigration goroutine이 다음 단계에서 MigrationFailed로 전이된다.
+//
+// 호출 시점: REST DELETE /api/v1/vms/{id}/migration (handleCancelMigration)
 func (p *PersistentComputeService) CancelMigration(handle int32) error {
 	return p.inner.CancelMigration(handle)
 }
