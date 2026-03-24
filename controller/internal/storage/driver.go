@@ -61,4 +61,14 @@ type StorageDriver interface {
 	// 부작용: ZFS는 "zfs destroy" 실행
 	// 에러 조건: 스냅샷 미존재, CLI 실행 실패
 	DeleteSnapshot(snapshotID string) error
+
+	// GetVolume 은 ID로 단일 볼륨 정보를 조회한다.
+	// 멱등성: 읽기 전용, 부작용 없음
+	// 에러 조건: 볼륨 미존재
+	GetVolume(id string) (*Volume, error)
+
+	// ResizeVolume 은 볼륨 크기를 변경한다.
+	// 멱등성: 아님 — 볼륨 크기가 변경됨
+	// 에러 조건: 볼륨 미존재, 크기 축소 불가 (백엔드에 따라 다름)
+	ResizeVolume(id string, newSizeBytes uint64) error
 }

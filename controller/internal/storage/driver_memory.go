@@ -196,3 +196,38 @@ func (d *MemoryDriver) DeleteSnapshot(snapshotID string) error {
 	delete(d.snapshots, snapshotID)
 	return nil
 }
+
+// GetVolume 은 인메모리에서 ID로 볼륨을 조회한다.
+// 볼륨 미존재 시 에러 반환.
+// 동시 호출 안전성: 안전 (RLock 사용)
+func (d *MemoryDriver) GetVolume(id string) (*Volume, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	vol, ok := d.volumes[id]
+	if !ok {
+		return nil, fmt.Errorf("volume not found: %s", id)
+	}
+	return vol, nil
+}
+
+// ResizeVolume 은 인메모리에서 볼륨 크기를 변경한다.
+// 풀의 사용량도 함께 갱신한다.
+// 동시 호출 안전성: 안전 (Lock 사용)
+func (d *MemoryDriver) ResizeVolume(id string, newSizeBytes uint64) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	vol, ok := d.volumes[id]
+	if !ok {
+		return fmt.Errorf("volume not found: %s", id)
+	}
+	// 풀 사용량 갱신
+	if p, ok := d.pools[vol.Pool]; ok {
+		if newSizeBytes > vol.SizeBytes {
+			p.UsedBytes += newSizeBytes - vol.SizeBytes
+		} else if p.UsedBytes >= vol.SizeBytes-newSizeBytes {
+			p.UsedBytes -= vol.SizeBytes - newSizeBytes
+		}
+	}
+	vol.SizeBytes = newSizeBytes
+	return nil
+}

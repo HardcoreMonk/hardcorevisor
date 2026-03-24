@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/api"
+	"github.com/HardcoreMonk/hardcorevisor/controller/internal/auth"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/backup"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/compute"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/ha"
@@ -46,6 +47,12 @@ func setupE2E(t *testing.T) (*httptest.Server, func()) {
 
 	storageSvc := storage.NewService()
 
+	// OAuth2 프로바이더 (시뮬레이션 모드)
+	oauth2Provider, _ := auth.NewOAuth2Provider(auth.OAuth2Config{
+		ClientID:    "e2e-test-client",
+		RedirectURL: "http://localhost:8080/api/v1/auth/oauth2/callback",
+	})
+
 	svc := &api.Services{
 		Compute:    computeSvc,
 		Storage:    storageSvc,
@@ -58,6 +65,7 @@ func setupE2E(t *testing.T) (*httptest.Server, func()) {
 		Image:      image.NewService("/tmp/hcv-images"),
 		LXC:        lxcBackend,
 		Task:       task.NewTaskService(),
+		OAuth2:     oauth2Provider,
 		Version: api.VersionInfo{
 			Version:   "test-e2e",
 			GitCommit: "abc123",
@@ -1724,4 +1732,164 @@ func TestE2E_NodeDetail(t *testing.T) {
 	if len(nodes) < 3 {
 		t.Fatalf("expected at least 3 nodes, got %d", len(nodes))
 	}
+}
+
+// ── E2E: OAuth2 Providers ──────────────────────────────
+
+func TestE2E_OAuth2Providers(t *testing.T) {
+	srv, cleanup := setupE2E(t)
+	defer cleanup()
+	base := srv.URL
+
+	// 1. 프로바이더 목록 조회
+	resp := httpGet(t, base+"/api/v1/auth/oauth2/providers")
+	assertStatus(t, resp, 200)
+	var result map[string]any
+	decodeJSON(t, resp, &result)
+	providers, ok := result["providers"].([]any)
+	if !ok || len(providers) == 0 {
+		t.Fatal("expected at least 1 provider")
+	}
+	p := providers[0].(map[string]any)
+	assertEqual(t, p["client_id"].(string), "e2e-test-client")
+	assertEqual(t, p["name"].(string), "simulated")
+
+	// 2. 인증 URL 생성
+	resp = httpGet(t, base+"/api/v1/auth/oauth2/authorize?state=test123")
+	assertStatus(t, resp, 200)
+	var authResult map[string]string
+	decodeJSON(t, resp, &authResult)
+	if authResult["authorization_url"] == "" {
+		t.Fatal("expected non-empty authorization_url")
+	}
+	if authResult["state"] != "test123" {
+		t.Errorf("expected state=test123, got %s", authResult["state"])
+	}
+
+	// 3. 인증 URL에서 code 추출 → 콜백으로 토큰 교환
+	authURL := authResult["authorization_url"]
+	code := extractQueryParam(authURL, "code")
+	if code == "" {
+		t.Fatalf("could not extract code from authorization URL: %s", authURL)
+	}
+
+	resp = httpGet(t, base+"/api/v1/auth/oauth2/callback?code="+code)
+	assertStatus(t, resp, 200)
+	var token map[string]any
+	decodeJSON(t, resp, &token)
+	if token["access_token"] == nil || token["access_token"].(string) == "" {
+		t.Error("expected non-empty access_token")
+	}
+	userInfo := token["user_info"].(map[string]any)
+	if userInfo["email"].(string) != "user@example.com" {
+		t.Errorf("expected email user@example.com, got %s", userInfo["email"])
+	}
+
+	// 4. 잘못된 코드로 콜백 — 401
+	resp = httpGet(t, base+"/api/v1/auth/oauth2/callback?code=invalid")
+	assertStatus(t, resp, 401)
+
+	// 5. 코드 없이 콜백 — 400
+	resp = httpGet(t, base+"/api/v1/auth/oauth2/callback")
+	assertStatus(t, resp, 400)
+}
+
+// ── E2E: Volume Resize ────────────────────────────────
+
+func TestE2E_VolumeResize(t *testing.T) {
+	srv, cleanup := setupE2E(t)
+	defer cleanup()
+	base := srv.URL
+
+	// 1. 볼륨 생성
+	resp := httpPost(t, base+"/api/v1/storage/volumes", map[string]any{
+		"pool": "local-zfs", "name": "resize-test", "size_bytes": 1073741824, "format": "qcow2",
+	})
+	assertStatus(t, resp, 201)
+	var vol map[string]any
+	decodeJSON(t, resp, &vol)
+	volID := vol["id"].(string)
+	if vol["size_bytes"].(float64) != 1073741824 {
+		t.Fatalf("expected size 1073741824, got %v", vol["size_bytes"])
+	}
+
+	// 2. 볼륨 크기 변경 (2GB로 확장)
+	resp = httpPost(t, base+"/api/v1/storage/volumes/"+volID+"/resize", map[string]any{
+		"size_bytes": 2147483648,
+	})
+	assertStatus(t, resp, 200)
+	var resized map[string]any
+	decodeJSON(t, resp, &resized)
+	if resized["size_bytes"].(float64) != 2147483648 {
+		t.Fatalf("expected resized to 2147483648, got %v", resized["size_bytes"])
+	}
+
+	// 3. 존재하지 않는 볼륨 크기 변경 — 404
+	resp = httpPost(t, base+"/api/v1/storage/volumes/nonexistent/resize", map[string]any{
+		"size_bytes": 1073741824,
+	})
+	assertStatus(t, resp, 404)
+
+	// 4. size_bytes 없이 — 400
+	resp = httpPost(t, base+"/api/v1/storage/volumes/"+volID+"/resize", map[string]any{})
+	assertStatus(t, resp, 400)
+}
+
+// ── E2E: Volume Detail ────────────────────────────────
+
+func TestE2E_VolumeDetail(t *testing.T) {
+	srv, cleanup := setupE2E(t)
+	defer cleanup()
+	base := srv.URL
+
+	// 1. 볼륨 생성
+	resp := httpPost(t, base+"/api/v1/storage/volumes", map[string]any{
+		"pool": "local-zfs", "name": "detail-test", "size_bytes": 536870912, "format": "raw",
+	})
+	assertStatus(t, resp, 201)
+	var vol map[string]any
+	decodeJSON(t, resp, &vol)
+	volID := vol["id"].(string)
+
+	// 2. 볼륨 상세 조회
+	resp = httpGet(t, base+"/api/v1/storage/volumes/"+volID)
+	assertStatus(t, resp, 200)
+	var detail map[string]any
+	decodeJSON(t, resp, &detail)
+	assertEqual(t, detail["name"].(string), "detail-test")
+	assertEqual(t, detail["pool"].(string), "local-zfs")
+	assertEqual(t, detail["format"].(string), "raw")
+	if detail["size_bytes"].(float64) != 536870912 {
+		t.Fatalf("expected size 536870912, got %v", detail["size_bytes"])
+	}
+
+	// 3. 존재하지 않는 볼륨 조회 — 404
+	resp = httpGet(t, base+"/api/v1/storage/volumes/nonexistent")
+	assertStatus(t, resp, 404)
+
+	// 4. 볼륨 삭제 후 조회 — 404
+	resp = httpDelete(t, base+"/api/v1/storage/volumes/"+volID)
+	assertStatus(t, resp, 204)
+	resp = httpGet(t, base+"/api/v1/storage/volumes/"+volID)
+	assertStatus(t, resp, 404)
+}
+
+// extractQueryParam 는 URL에서 쿼리 파라미터를 추출한다.
+func extractQueryParam(rawURL, param string) string {
+	prefix := param + "="
+	idx := 0
+	for idx < len(rawURL) {
+		if idx > 0 && (rawURL[idx-1] == '?' || rawURL[idx-1] == '&') {
+			if idx+len(prefix) <= len(rawURL) && rawURL[idx:idx+len(prefix)] == prefix {
+				start := idx + len(prefix)
+				end := start
+				for end < len(rawURL) && rawURL[end] != '&' {
+					end++
+				}
+				return rawURL[start:end]
+			}
+		}
+		idx++
+	}
+	return ""
 }

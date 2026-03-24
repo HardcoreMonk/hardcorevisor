@@ -91,6 +91,7 @@ type Services struct {
 	LXC        *compute.LXCBackend
 	Task       *task.TaskService
 	Auth       *AuthServices
+	OAuth2     *auth.OAuth2Provider
 	HAServices *HAServices
 	Version    VersionInfo
 	EventHub   *EventHub
@@ -156,7 +157,11 @@ func NewRouter(svc *Services, rbacUsers ...map[string]auth.RBACUser) http.Handle
 		mux.HandleFunc("GET /api/v1/storage/pools", svc.handleStoragePools)
 		mux.HandleFunc("GET /api/v1/storage/volumes", svc.handleStorageVolumes)
 		mux.HandleFunc("POST /api/v1/storage/volumes", svc.handleCreateVolume)
+		mux.HandleFunc("GET /api/v1/storage/volumes/{id}", svc.handleGetVolume)
 		mux.HandleFunc("DELETE /api/v1/storage/volumes/{id}", svc.handleDeleteVolume)
+		mux.HandleFunc("POST /api/v1/storage/volumes/{id}/resize", svc.handleResizeVolume)
+		mux.HandleFunc("POST /api/v1/storage/volumes/{id}/export", svc.handleExportVolume)
+		mux.HandleFunc("POST /api/v1/storage/volumes/import", svc.handleImportVolume)
 
 		// Storage Snapshots
 		mux.HandleFunc("POST /api/v1/storage/snapshots/{id}/rollback", svc.handleStorageSnapshotRollback)
@@ -238,6 +243,13 @@ func NewRouter(svc *Services, rbacUsers ...map[string]auth.RBACUser) http.Handle
 			mux.HandleFunc("GET /api/v1/auth/users", svc.handleAuthListUsers)
 			mux.HandleFunc("POST /api/v1/auth/users", svc.handleAuthCreateUser)
 			mux.HandleFunc("DELETE /api/v1/auth/users/{username}", svc.handleAuthDeleteUser)
+		}
+
+		// OAuth2/OIDC endpoints
+		if svc.OAuth2 != nil {
+			mux.HandleFunc("GET /api/v1/auth/oauth2/providers", svc.handleOAuth2Providers)
+			mux.HandleFunc("GET /api/v1/auth/oauth2/authorize", svc.handleOAuth2Authorize)
+			mux.HandleFunc("GET /api/v1/auth/oauth2/callback", svc.handleOAuth2Callback)
 		}
 	}
 
@@ -956,6 +968,141 @@ func (svc *Services) handleDeleteVolume(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleGetVolume — 볼륨 상세 조회 (GET /api/v1/storage/volumes/{id}).
+// 볼륨 ID로 단일 볼륨 정보를 반환한다. 미존재 시 404.
+func (svc *Services) handleGetVolume(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	vol, err := svc.Storage.GetVolume(id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, ErrCodeNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, vol)
+}
+
+// handleResizeVolume — 볼륨 크기 변경 (POST /api/v1/storage/volumes/{id}/resize).
+// 요청 본문: {"size_bytes": N}. 볼륨 크기를 변경한다.
+func (svc *Services) handleResizeVolume(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var req struct {
+		SizeBytes uint64 `json:"size_bytes"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", err.Error())
+		return
+	}
+	if req.SizeBytes == 0 {
+		writeError(w, http.StatusBadRequest, ErrCodeBadRequest, "size_bytes must be greater than 0")
+		return
+	}
+	if err := svc.Storage.ResizeVolume(id, req.SizeBytes); err != nil {
+		writeError(w, http.StatusNotFound, ErrCodeNotFound, err.Error())
+		return
+	}
+	// 변경된 볼륨 정보 반환
+	vol, err := svc.Storage.GetVolume(id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, ErrCodeNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, vol)
+}
+
+// handleExportVolume — 볼륨 내보내기 (POST /api/v1/storage/volumes/{id}/export).
+// 요청 본문: {"path": "/backup/disk.img"}. 볼륨을 파일로 내보낸다.
+func (svc *Services) handleExportVolume(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var req struct {
+		Path string `json:"path"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", err.Error())
+		return
+	}
+	if req.Path == "" {
+		writeError(w, http.StatusBadRequest, ErrCodeBadRequest, "path is required")
+		return
+	}
+	if err := svc.Storage.ExportVolume(id, req.Path); err != nil {
+		writeError(w, http.StatusNotFound, ErrCodeNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "exported", "volume_id": id, "path": req.Path})
+}
+
+// handleImportVolume — 볼륨 가져오기 (POST /api/v1/storage/volumes/import).
+// 요청 본문: {"path": "/backup/disk.img", "pool": "local-zfs", "name": "imported-vol"}.
+func (svc *Services) handleImportVolume(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Path string `json:"path"`
+		Pool string `json:"pool"`
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", err.Error())
+		return
+	}
+	if msg := validateRequired(map[string]string{"path": req.Path, "pool": req.Pool, "name": req.Name}); msg != "" {
+		writeError(w, http.StatusBadRequest, ErrCodeBadRequest, msg)
+		return
+	}
+	vol, err := svc.Storage.ImportVolume(req.Path, req.Pool, req.Name)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, ErrCodeBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, vol)
+}
+
+// ── OAuth2/OIDC Handlers ──────────────────────────────
+
+// handleOAuth2Providers — 설정된 OAuth2 프로바이더 목록 (GET /api/v1/auth/oauth2/providers).
+func (svc *Services) handleOAuth2Providers(w http.ResponseWriter, _ *http.Request) {
+	cfg := svc.OAuth2.Config()
+	provider := map[string]any{
+		"name":         svc.OAuth2.ProviderName(),
+		"provider_url": cfg.ProviderURL,
+		"client_id":    cfg.ClientID,
+		"redirect_url": cfg.RedirectURL,
+		"scopes":       cfg.Scopes,
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"providers": []any{provider},
+	})
+}
+
+// handleOAuth2Authorize — OAuth2 인증 URL 반환 (GET /api/v1/auth/oauth2/authorize).
+// 쿼리 파라미터: state (CSRF 방지용). 없으면 자동 생성.
+func (svc *Services) handleOAuth2Authorize(w http.ResponseWriter, r *http.Request) {
+	state := r.URL.Query().Get("state")
+	if state == "" {
+		state = fmt.Sprintf("hcv-%d", time.Now().UnixNano())
+	}
+	authURL := svc.OAuth2.GetAuthorizationURL(state)
+	writeJSON(w, http.StatusOK, map[string]string{
+		"authorization_url": authURL,
+		"state":             state,
+	})
+}
+
+// handleOAuth2Callback — OAuth2 콜백 처리 (GET /api/v1/auth/oauth2/callback).
+// 쿼리 파라미터: code (인증 코드). 토큰 교환 후 결과를 JSON으로 반환.
+func (svc *Services) handleOAuth2Callback(w http.ResponseWriter, r *http.Request) {
+	code := r.URL.Query().Get("code")
+	if code == "" {
+		writeError(w, http.StatusBadRequest, ErrCodeBadRequest, "code parameter is required")
+		return
+	}
+
+	token, err := svc.OAuth2.ExchangeCode(r.Context(), code)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, ErrCodeUnauthorized, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, token)
 }
 
 // ── Storage Snapshot Handlers ─────────────────────────

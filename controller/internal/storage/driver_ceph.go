@@ -190,3 +190,109 @@ func (d *CephDriver) DeleteSnapshot(snapshotID string) error {
 	}
 	return nil
 }
+
+// GetVolume 은 "rbd info <id> --format json" 명령으로 RBD 이미지 정보를 조회한다.
+//
+// 현재는 인메모리 볼륨 ID 매핑이 없으므로 best-effort로 에러를 반환한다.
+// TODO: 볼륨 ID → pool/name 매핑 구현 후 실제 rbd info 실행
+//
+// 에러 조건: 볼륨 미존재, rbd 명령 실행 실패
+func (d *CephDriver) GetVolume(id string) (*Volume, error) {
+	// best-effort: rbd info로 조회 시도
+	cmd := exec.Command("rbd", "info", id, "--format", "json")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("volume not found: %s: %s", id, string(out))
+	}
+	// 파싱 없이 기본 정보만 반환 (TODO: JSON 파싱)
+	return &Volume{
+		ID:   id,
+		Pool: d.pool,
+		Name: id,
+		Path: fmt.Sprintf("rbd:%s/%s", d.pool, id),
+	}, nil
+}
+
+// ResizeVolume 은 "rbd resize --size <MB> <id>" 명령으로 RBD 이미지 크기를 변경한다.
+//
+// 에러 조건: 이미지 미존재, 크기 축소 시 --allow-shrink 미지정, 권한 부족
+// 부작용: 실제 RBD 이미지 크기 변경
+func (d *CephDriver) ResizeVolume(id string, newSizeBytes uint64) error {
+	sizeMB := newSizeBytes / (1024 * 1024)
+	cmd := exec.Command("rbd", "resize", "--size", fmt.Sprintf("%d", sizeMB), id)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("rbd resize: %s: %w", string(out), err)
+	}
+	return nil
+}
+
+// ListVolumes 는 "rbd ls --format json" + "rbd info" 명령으로 RBD 이미지 목록을 조회한다.
+//
+// pool이 빈 문자열이면 기본 풀을 사용한다.
+// 에러 조건: rbd 명령 실행 실패
+// 부작용: 없음 (읽기 전용)
+func (d *CephDriver) ListVolumes(pool string) ([]Volume, error) {
+	if pool == "" {
+		pool = d.pool
+	}
+	cmd := exec.Command("rbd", "ls", "-p", pool, "--format", "json")
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("rbd ls: %w", err)
+	}
+	_ = out // TODO: JSON 파싱 ([]string 형식)
+	return nil, nil
+}
+
+// ExportVolume 은 "rbd export <id> <path>" 명령으로 RBD 이미지를 파일로 내보낸다.
+//
+// 백업 또는 다른 클러스터로의 이동에 사용된다.
+// 에러 조건: 이미지 미존재, 경로 쓰기 불가, 디스크 용량 부족
+// 부작용: 지정 경로에 이미지 파일 생성
+func (d *CephDriver) ExportVolume(id, path string) error {
+	cmd := exec.Command("rbd", "export", id, path)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("rbd export: %s: %w", string(out), err)
+	}
+	return nil
+}
+
+// ImportVolume 은 "rbd import <path> <pool>/<name>" 명령으로 파일을 RBD 이미지로 가져온다.
+//
+// 에러 조건: 경로 읽기 불가, 풀 미존재, 이름 중복
+// 부작용: 실제 RBD 이미지 생성
+func (d *CephDriver) ImportVolume(path, pool, name string) (*Volume, error) {
+	if pool == "" {
+		pool = d.pool
+	}
+	imgName := fmt.Sprintf("%s/%s", pool, name)
+	cmd := exec.Command("rbd", "import", path, imgName)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("rbd import: %s: %w", string(out), err)
+	}
+
+	d.mu.Lock()
+	id := fmt.Sprintf("ceph-vol-%d", d.nextVolID.Add(1)-1)
+	d.mu.Unlock()
+
+	return &Volume{
+		ID:        id,
+		Pool:      pool,
+		Name:      name,
+		Format:    "rbd",
+		Path:      fmt.Sprintf("rbd:%s", imgName),
+		CreatedAt: time.Now().Unix(),
+	}, nil
+}
+
+// FlattenClone 은 "rbd flatten <id>" 명령으로 클론의 스냅샷 의존성을 제거한다.
+//
+// 클론이 독립적인 이미지가 되어 원본 스냅샷을 삭제할 수 있게 된다.
+// 에러 조건: 이미지 미존재, 이미 flatten된 이미지
+// 부작용: 데이터 복사로 인한 I/O 발생 (시간 소요 가능)
+func (d *CephDriver) FlattenClone(id string) error {
+	cmd := exec.Command("rbd", "flatten", id)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("rbd flatten: %s: %w", string(out), err)
+	}
+	return nil
+}

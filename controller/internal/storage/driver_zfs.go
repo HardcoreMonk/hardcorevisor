@@ -258,6 +258,49 @@ func (d *ZFSDriver) ListVolumes(pool string) ([]Volume, error) {
 	return volumes, nil
 }
 
+// GetVolume 은 ZFS 볼륨 정보를 조회한다.
+// "zfs list -H -o name,used,refer -t volume <id>" 명령을 실행한다.
+// id는 "pool/name" 형식이어야 한다.
+// 에러 조건: 볼륨 미존재, zfs 명령 실행 실패
+func (d *ZFSDriver) GetVolume(id string) (*Volume, error) {
+	out, err := exec.Command("zfs", "list", "-H", "-o", "name,used,refer", "-t", "volume", id).Output()
+	if err != nil {
+		return nil, fmt.Errorf("volume not found: %s", id)
+	}
+	line := strings.TrimSpace(string(out))
+	fields := strings.Fields(line)
+	if len(fields) < 3 {
+		return nil, fmt.Errorf("volume not found: %s", id)
+	}
+	parts := strings.SplitN(fields[0], "/", 2)
+	pool := parts[0]
+	name := ""
+	if len(parts) > 1 {
+		name = parts[1]
+	}
+	return &Volume{
+		ID:        id,
+		Pool:      pool,
+		Name:      name,
+		SizeBytes: parseSize(fields[2]),
+		Format:    "zvol",
+		Path:      fmt.Sprintf("/dev/zvol/%s", id),
+		CreatedAt: time.Now().Unix(),
+	}, nil
+}
+
+// ResizeVolume 은 "zfs set volsize=<size> <id>" 명령으로 ZFS 볼륨 크기를 변경한다.
+// 에러 조건: 볼륨 미존재, 크기 축소 불가, 권한 부족
+// 부작용: 실제 ZFS zvol 크기 변경
+func (d *ZFSDriver) ResizeVolume(id string, newSizeBytes uint64) error {
+	sizeStr := fmt.Sprintf("volsize=%d", newSizeBytes)
+	cmd := exec.Command("zfs", "set", sizeStr, id)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("zfs resize %s: %s: %w", id, strings.TrimSpace(string(out)), err)
+	}
+	return nil
+}
+
 // parseSize 는 ZFS 크기 문자열을 바이트 단위로 변환한다.
 // 예: "1.5T" → 1649267441664, "500G" → 536870912000, "100M" → 104857600
 // 지원 단위: K, M, G, T, P (1024 기반)

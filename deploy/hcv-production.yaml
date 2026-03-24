@@ -1,0 +1,32 @@
+# HardCoreVisor Production Configuration
+#
+# Place at /etc/hardcorevisor/hcv.yaml on the production host.
+# All values can be overridden by environment variables (see comments).
+# Secrets MUST be set via environment variables or /etc/hardcorevisor/hcv.env.
+
+# REST API server
+api:
+  addr: ":8080"                # HCV_API_ADDR
+
+# gRPC server
+grpc:
+  addr: ":9090"                # HCV_GRPC_ADDR
+
+# etcd state store
+etcd:
+  endpoints: "localhost:2379"  # HCV_ETCD_ENDPOINTS
+
+# TLS — paths on the production host
+tls:
+  cert_file: "/etc/hardcorevisor/tls/server.pem"    # HCV_TLS_CERT
+  key_file: "/etc/hardcorevisor/tls/server-key.pem"  # HCV_TLS_KEY
+
+# Authentication — JWT secret MUST be set via HCV_JWT_SECRET env var
+auth:
+  jwt_secret: ""               # HCV_JWT_SECRET (REQUIRED: set a random 64-char string)
+  db_path: "/var/lib/hardcorevisor/hcv.db"
+
+# Logging — JSON format for structured log aggregation
+log:
+  level: "info"                # HCV_LOG_LEVEL  (debug, info, warn, error)
+  format: "json"               # HCV_LOG_FORMAT (text, json)

@@ -169,6 +169,22 @@ clean:
     rm -rf target/controller target/hcvctl
 
 # ═══════════════════════════════════════════════════════════
+# Web UI Recipes
+# ═══════════════════════════════════════════════════════════
+
+# Start Web UI dev server (Vite, :5173)
+webui-dev:
+    cd webui && npm run dev
+
+# Build Web UI for production
+webui-build:
+    cd webui && npm run build
+
+# Install Web UI dependencies
+webui-install:
+    cd webui && npm install
+
+# ═══════════════════════════════════════════════════════════
 # Docker / Dev Services
 # ═══════════════════════════════════════════════════════════
 
@@ -294,3 +310,25 @@ deb:
 release-build: rust-release go-controller go-hcvctl
     @echo "Release binaries:"
     @ls -lh target/release/libvmcore.a target/controller target/hcvctl 2>/dev/null || true
+
+# ═══════════════════════════════════════════════════════════
+# Production Deployment
+# ═══════════════════════════════════════════════════════════
+
+# Deploy to production host (default: hardcoremonk@192.168.3.50)
+deploy-prod host="hardcoremonk@192.168.3.50":
+    chmod +x scripts/deploy-production.sh
+    TARGET_HOST={{host}} ./scripts/deploy-production.sh
+
+# Generate self-signed TLS certificates for dev/testing
+gen-tls:
+    chmod +x scripts/gen-tls-certs.sh
+    ./scripts/gen-tls-certs.sh
+
+# Start production Docker Compose stack
+prod-up:
+    docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.prod.yml up -d
+
+# Stop production Docker Compose stack
+prod-down:
+    docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.prod.yml down

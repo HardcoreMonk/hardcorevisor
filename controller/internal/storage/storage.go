@@ -331,6 +331,104 @@ func (s *Service) DeleteSnapshot(id string) error {
 	return nil
 }
 
+// GetVolume 은 ID로 단일 볼륨을 조회한다.
+//
+// 하는 일: MemoryDriver인 경우 로컬 상태에서 조회, 그 외에는 드라이버에 위임.
+// 호출 시점: REST GET /api/v1/storage/volumes/{id}
+// 동시 호출 안전성: 안전 (RLock으로 보호)
+func (s *Service) GetVolume(id string) (*Volume, error) {
+	if _, ok := s.driver.(*MemoryDriver); ok {
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		vol, exists := s.volumes[id]
+		if !exists {
+			return nil, fmt.Errorf("volume not found: %s", id)
+		}
+		return vol, nil
+	}
+	return s.driver.GetVolume(id)
+}
+
+// ResizeVolume 은 볼륨 크기를 변경한다.
+//
+// 하는 일: 볼륨 존재 확인 → 크기 변경 → 풀 사용량 갱신
+// 호출 시점: REST POST /api/v1/storage/volumes/{id}/resize
+// 동시 호출 안전성: 안전 (Lock으로 보호)
+func (s *Service) ResizeVolume(id string, newSizeBytes uint64) error {
+	if _, ok := s.driver.(*MemoryDriver); ok {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		vol, exists := s.volumes[id]
+		if !exists {
+			return fmt.Errorf("volume not found: %s", id)
+		}
+		// 풀 사용량 갱신
+		if p, ok := s.pools[vol.Pool]; ok {
+			if newSizeBytes > vol.SizeBytes {
+				p.UsedBytes += newSizeBytes - vol.SizeBytes
+			} else if p.UsedBytes >= vol.SizeBytes-newSizeBytes {
+				p.UsedBytes -= vol.SizeBytes - newSizeBytes
+			}
+		}
+		vol.SizeBytes = newSizeBytes
+		return nil
+	}
+	return s.driver.ResizeVolume(id, newSizeBytes)
+}
+
+// ExportVolume 은 볼륨을 파일로 내보낸다.
+//
+// 하는 일: MemoryDriver인 경우 시뮬레이션 성공, 그 외에는 드라이버에 위임.
+// 호출 시점: REST POST /api/v1/storage/volumes/{id}/export
+// 동시 호출 안전성: 안전
+func (s *Service) ExportVolume(id, path string) error {
+	if _, ok := s.driver.(*MemoryDriver); ok {
+		s.mu.RLock()
+		_, exists := s.volumes[id]
+		s.mu.RUnlock()
+		if !exists {
+			return fmt.Errorf("volume not found: %s", id)
+		}
+		return nil // 시뮬레이션: 성공 반환
+	}
+	// Ceph 드라이버만 ExportVolume 지원
+	if cd, ok := s.driver.(*CephDriver); ok {
+		return cd.ExportVolume(id, path)
+	}
+	return fmt.Errorf("export not supported by driver: %s", s.driver.Name())
+}
+
+// ImportVolume 은 파일에서 볼륨을 가져온다.
+//
+// 하는 일: MemoryDriver인 경우 인메모리에 볼륨 생성, 그 외에는 드라이버에 위임.
+// 호출 시점: REST POST /api/v1/storage/volumes/import
+// 동시 호출 안전성: 안전
+func (s *Service) ImportVolume(path, pool, name string) (*Volume, error) {
+	if _, ok := s.driver.(*MemoryDriver); ok {
+		// 시뮬레이션: 풀 존재 확인 후 볼륨 생성
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if _, ok := s.pools[pool]; !ok {
+			return nil, fmt.Errorf("pool not found: %s", pool)
+		}
+		id := fmt.Sprintf("vol-%d", s.nextVolID.Add(1)-1)
+		vol := &Volume{
+			ID: id, Pool: pool, Name: name,
+			SizeBytes: 0, // 임포트 시 크기 미상
+			Format:    "imported",
+			Path:      fmt.Sprintf("/dev/%s/%s", pool, name),
+			CreatedAt: time.Now().Unix(),
+		}
+		s.volumes[id] = vol
+		return vol, nil
+	}
+	// Ceph 드라이버만 ImportVolume 지원
+	if cd, ok := s.driver.(*CephDriver); ok {
+		return cd.ImportVolume(path, pool, name)
+	}
+	return nil, fmt.Errorf("import not supported by driver: %s", s.driver.Name())
+}
+
 // ListSnapshots 는 스냅샷 목록을 반환하며, volumeID로 필터링이 가능하다.
 //
 // 하는 일: volumeID가 빈 문자열이면 전체 반환, 아니면 해당 볼륨의 스냅샷만 반환.

@@ -32,9 +32,19 @@ type Config struct {
 	Etcd       EtcdConfig       `yaml:"etcd"`
 	TLS        TLSConfig        `yaml:"tls"`
 	Auth       AuthConfig       `yaml:"auth"`
+	OAuth2     OAuth2Config     `yaml:"oauth2"`
 	Log        LogConfig        `yaml:"log"`
 	Storage    StorageConfig    `yaml:"storage"`
 	Peripheral PeripheralConfig `yaml:"peripheral"`
+}
+
+// OAuth2Config 는 OAuth2/OIDC 프로바이더 설정을 보관한다.
+// ProviderURL이 빈 문자열이면 OAuth2 기능이 비활성화된다.
+type OAuth2Config struct {
+	ProviderURL  string `yaml:"provider_url"`  // OIDC 프로바이더 URL
+	ClientID     string `yaml:"client_id"`     // OAuth2 클라이언트 ID
+	ClientSecret string `yaml:"client_secret"` // OAuth2 클라이언트 시크릿
+	RedirectURL  string `yaml:"redirect_url"`  // 콜백 URL (기본: http://localhost:8080/api/v1/auth/oauth2/callback)
 }
 
 // StorageConfig 는 스토리지 백엔드 설정을 보관한다.
@@ -176,6 +186,16 @@ func Load(path string) (*Config, error) {
 	}
 	if v := os.Getenv("HCV_DB_PATH"); v != "" {
 		cfg.Auth.DBPath = v
+	}
+	// OAuth2/OIDC 환경변수 오버라이드
+	if v := os.Getenv("HCV_OAUTH2_PROVIDER"); v != "" {
+		cfg.OAuth2.ProviderURL = v
+	}
+	if v := os.Getenv("HCV_OAUTH2_CLIENT_ID"); v != "" {
+		cfg.OAuth2.ClientID = v
+	}
+	if v := os.Getenv("HCV_OAUTH2_CLIENT_SECRET"); v != "" {
+		cfg.OAuth2.ClientSecret = v
 	}
 
 	return cfg, nil
