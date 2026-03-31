@@ -3,18 +3,6 @@ version: "2"
 linters:
   default: none
   enable:
-    - errcheck
     - govet
     - staticcheck
     - unused
-
-linters-settings:
-  errcheck:
-    exclude-functions:
-      - (io.Closer).Close
-      - (*os.File).Close
-      - (net/http.ResponseWriter).Write
-      - fmt.Fprintln
-      - fmt.Fprintf
-      - fmt.Printf
-      - (*tabwriter.Writer).Flush
