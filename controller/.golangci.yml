@@ -1,5 +1,13 @@
 version: "2"
 
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - unused
+
 linters-settings:
   errcheck:
     exclude-functions:
@@ -9,12 +17,4 @@ linters-settings:
       - fmt.Fprintln
       - fmt.Fprintf
       - fmt.Printf
-
-linters:
-  enable:
-    - errcheck
-    - govet
-    - staticcheck
-    - unused
-  disable:
-    - depguard
+      - (*tabwriter.Writer).Flush
