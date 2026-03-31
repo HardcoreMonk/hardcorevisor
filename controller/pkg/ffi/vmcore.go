@@ -11,7 +11,7 @@
 package ffi
 
 /*
-#cgo LDFLAGS: -L${SRCDIR}/../../../vmcore/target/release -lvmcore -ldl -lpthread -lm
+#cgo LDFLAGS: -L${SRCDIR}/../../../target/release -lvmcore -ldl -lpthread -lm
 #include <stdint.h>
 
 // ── lib.rs FFI (3개) ──
