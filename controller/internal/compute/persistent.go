@@ -20,7 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/store"
@@ -58,7 +58,7 @@ func (p *PersistentComputeService) CreateVM(name string, vcpus uint32, memoryMB 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if putErr := p.store.Put(ctx, vmStoreKey(vm.ID), vm); putErr != nil {
-		log.Printf("persistent: failed to store VM %d: %v", vm.ID, putErr)
+		slog.Error("persistent: failed to store VM", "vm_id", vm.ID, "error", putErr)
 	}
 	return vm, nil
 }
@@ -71,7 +71,7 @@ func (p *PersistentComputeService) DestroyVM(handle int32) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if delErr := p.store.Delete(ctx, vmStoreKey(handle)); delErr != nil {
-		log.Printf("persistent: failed to delete VM %d from store: %v", handle, delErr)
+		slog.Error("persistent: failed to delete VM from store", "vm_id", handle, "error", delErr)
 	}
 	return nil
 }
@@ -85,7 +85,7 @@ func (p *PersistentComputeService) ActionVM(handle int32, action string) (*VMInf
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if putErr := p.store.Put(ctx, vmStoreKey(vm.ID), vm); putErr != nil {
-		log.Printf("persistent: failed to update VM %d in store: %v", vm.ID, putErr)
+		slog.Error("persistent: failed to update VM in store", "vm_id", vm.ID, "error", putErr)
 	}
 	return vm, nil
 }
@@ -122,7 +122,7 @@ func (p *PersistentComputeService) MigrateVM(handle int32, targetNode string) er
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if putErr := p.store.Put(ctx, vmStoreKey(vm.ID), vm); putErr != nil {
-		log.Printf("persistent: failed to update VM %d after migration: %v", vm.ID, putErr)
+		slog.Error("persistent: failed to update VM after migration", "vm_id", vm.ID, "error", putErr)
 	}
 	return nil
 }
@@ -164,7 +164,7 @@ func (p *PersistentComputeService) LoadFromStore() error {
 	}
 
 	if len(kvs) == 0 {
-		log.Println("persistent: no VMs found in store")
+		slog.Info("persistent: no VMs found in store")
 		return nil
 	}
 
@@ -172,18 +172,18 @@ func (p *PersistentComputeService) LoadFromStore() error {
 	for _, kv := range kvs {
 		var vm VMInfo
 		if err := json.Unmarshal(kv.Value, &vm); err != nil {
-			log.Printf("persistent: failed to unmarshal VM from key %s: %v", kv.Key, err)
+			slog.Warn("persistent: failed to unmarshal VM", "key", kv.Key, "error", err)
 			continue
 		}
 		// Recreate the VM through the backend
 		_, createErr := p.inner.CreateVM(vm.Name, vm.VCPUs, vm.MemoryMB, vm.Backend)
 		if createErr != nil {
-			log.Printf("persistent: failed to recreate VM %q: %v", vm.Name, createErr)
+			slog.Error("persistent: failed to recreate VM", "vm_name", vm.Name, "error", createErr)
 			continue
 		}
 		loaded++
 	}
 
-	log.Printf("persistent: loaded %d/%d VMs from store", loaded, len(kvs))
+	slog.Info("persistent: loaded VMs from store", "loaded", loaded, "total", len(kvs))
 	return nil
 }

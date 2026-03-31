@@ -3,7 +3,7 @@
 # Usage: ./scripts/load-test.sh [base_url] [duration_seconds] [concurrency]
 set -euo pipefail
 
-BASE=${1:-http://localhost:8080}
+BASE=${1:-http://localhost:18080}
 DURATION=${2:-30}
 CONCURRENCY=${3:-10}
 

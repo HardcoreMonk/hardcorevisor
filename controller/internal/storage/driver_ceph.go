@@ -13,8 +13,10 @@
 package storage
 
 import (
+	"encoding/json"
 	"fmt"
 	"os/exec"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -26,6 +28,8 @@ import (
 type CephDriver struct {
 	mu         sync.RWMutex
 	pool       string // default Ceph pool name
+	volumes    map[string]*Volume   // id → Volume (인메모리 매핑)
+	snapshots  map[string]*Snapshot // id → Snapshot (인메모리 매핑)
 	nextVolID  atomic.Int32
 	nextSnapID atomic.Int32
 }
@@ -38,7 +42,11 @@ func NewCephDriver(pool string) *CephDriver {
 	if pool == "" {
 		pool = "rbd"
 	}
-	d := &CephDriver{pool: pool}
+	d := &CephDriver{
+		pool:      pool,
+		volumes:   make(map[string]*Volume),
+		snapshots: make(map[string]*Snapshot),
+	}
 	d.nextVolID.Store(1)
 	d.nextSnapID.Store(1)
 	return d
@@ -81,9 +89,7 @@ func (d *CephDriver) CreateVolume(pool, name, format string, sizeBytes uint64) (
 
 	d.mu.Lock()
 	id := fmt.Sprintf("ceph-vol-%d", d.nextVolID.Add(1)-1)
-	d.mu.Unlock()
-
-	return &Volume{
+	vol := &Volume{
 		ID:        id,
 		Pool:      pool,
 		Name:      name,
@@ -91,41 +97,76 @@ func (d *CephDriver) CreateVolume(pool, name, format string, sizeBytes uint64) (
 		Format:    "rbd",
 		Path:      fmt.Sprintf("rbd:%s/%s", pool, name),
 		CreatedAt: time.Now().Unix(),
-	}, nil
+	}
+	d.volumes[id] = vol
+	d.mu.Unlock()
+
+	return vol, nil
 }
 
-// DeleteVolume 은 Ceph RBD 이미지를 삭제한다.
-// 현재는 name→id 매핑이 구현되지 않아 best-effort로 nil을 반환한다.
-// TODO: 볼륨 ID에서 pool/name을 추출하여 "rbd rm" 실행
-// 멱등성: 현재 항상 성공 반환
+// DeleteVolume 은 "rbd rm <pool>/<name>" 명령으로 Ceph RBD 이미지를 삭제한다.
+// 인메모리 매핑에서 pool/name을 조회하여 실제 rbd rm을 실행한다.
 func (d *CephDriver) DeleteVolume(id string) error {
-	// name→id 매핑 필요 — 현재는 best-effort
+	d.mu.Lock()
+	vol, ok := d.volumes[id]
+	if ok {
+		delete(d.volumes, id)
+	}
+	d.mu.Unlock()
+
+	if !ok {
+		return fmt.Errorf("volume not found: %s", id)
+	}
+
+	imgName := fmt.Sprintf("%s/%s", vol.Pool, vol.Name)
+	cmd := exec.Command("rbd", "rm", imgName)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("rbd rm: %s: %w", string(out), err)
+	}
 	return nil
 }
 
-// CreateSnapshot 은 Ceph RBD 스냅샷을 생성한다.
-// 현재는 인메모리에만 기록하며, 실제 "rbd snap create" 명령은 미구현이다.
-// TODO: "rbd snap create <pool>/<volume>@<snap>" 실행
+// CreateSnapshot 은 "rbd snap create <pool>/<volume>@<snap>" 명령으로 Ceph RBD 스냅샷을 생성한다.
 func (d *CephDriver) CreateSnapshot(volumeID, name string) (*Snapshot, error) {
-	// rbd snap create <pool>/<volume>@<snap>
+	d.mu.RLock()
+	vol, ok := d.volumes[volumeID]
+	d.mu.RUnlock()
+
+	// 인메모리 매핑이 있으면 실제 rbd snap create 실행
+	if ok {
+		snapSpec := fmt.Sprintf("%s/%s@%s", vol.Pool, vol.Name, name)
+		cmd := exec.Command("rbd", "snap", "create", snapSpec)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return nil, fmt.Errorf("rbd snap create: %s: %w", string(out), err)
+		}
+	}
+
 	d.mu.Lock()
 	id := fmt.Sprintf("ceph-snap-%d", d.nextSnapID.Add(1)-1)
-	d.mu.Unlock()
-
-	return &Snapshot{
+	snap := &Snapshot{
 		ID:        id,
 		VolumeID:  volumeID,
 		Name:      name,
 		CreatedAt: time.Now().Unix(),
-	}, nil
+	}
+	d.snapshots[id] = snap
+	d.mu.Unlock()
+
+	return snap, nil
 }
 
-// ListSnapshots 는 Ceph RBD 스냅샷 목록을 반환한다.
-// 현재는 미구현으로 빈 목록을 반환한다.
-// TODO: "rbd snap ls <pool>/<volume>" 실행
+// ListSnapshots 는 인메모리 매핑에서 해당 볼륨의 스냅샷 목록을 반환한다.
 func (d *CephDriver) ListSnapshots(volumeID string) ([]*Snapshot, error) {
-	// rbd snap ls <pool>/<volume>
-	return nil, nil
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	var result []*Snapshot
+	for _, snap := range d.snapshots {
+		if snap.VolumeID == volumeID {
+			result = append(result, snap)
+		}
+	}
+	return result, nil
 }
 
 // RollbackSnapshot 은 "rbd snap rollback <snapshotID>" 명령으로 Ceph RBD 스냅샷을 롤백한다.
@@ -191,25 +232,16 @@ func (d *CephDriver) DeleteSnapshot(snapshotID string) error {
 	return nil
 }
 
-// GetVolume 은 "rbd info <id> --format json" 명령으로 RBD 이미지 정보를 조회한다.
-//
-// 현재는 인메모리 볼륨 ID 매핑이 없으므로 best-effort로 에러를 반환한다.
-// TODO: 볼륨 ID → pool/name 매핑 구현 후 실제 rbd info 실행
-//
-// 에러 조건: 볼륨 미존재, rbd 명령 실행 실패
+// GetVolume 은 인메모리 매핑에서 볼륨을 조회한다.
+// 매핑에 없으면 "rbd info" 명령으로 Ceph에서 직접 조회를 시도한다.
 func (d *CephDriver) GetVolume(id string) (*Volume, error) {
-	// best-effort: rbd info로 조회 시도
-	cmd := exec.Command("rbd", "info", id, "--format", "json")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return nil, fmt.Errorf("volume not found: %s: %s", id, string(out))
+	d.mu.RLock()
+	vol, ok := d.volumes[id]
+	d.mu.RUnlock()
+	if ok {
+		return vol, nil
 	}
-	// 파싱 없이 기본 정보만 반환 (TODO: JSON 파싱)
-	return &Volume{
-		ID:   id,
-		Pool: d.pool,
-		Name: id,
-		Path: fmt.Sprintf("rbd:%s/%s", d.pool, id),
-	}, nil
+	return nil, fmt.Errorf("volume not found: %s", id)
 }
 
 // ResizeVolume 은 "rbd resize --size <MB> <id>" 명령으로 RBD 이미지 크기를 변경한다.
@@ -234,13 +266,39 @@ func (d *CephDriver) ListVolumes(pool string) ([]Volume, error) {
 	if pool == "" {
 		pool = d.pool
 	}
+
+	// "rbd ls" 명령으로 이미지 이름 목록 조회
 	cmd := exec.Command("rbd", "ls", "-p", pool, "--format", "json")
 	out, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("rbd ls: %w", err)
+		// CLI 실패 시 인메모리 매핑에서 반환 (폴백)
+		d.mu.RLock()
+		defer d.mu.RUnlock()
+		var result []Volume
+		for _, v := range d.volumes {
+			if v.Pool == pool || pool == "" {
+				result = append(result, *v)
+			}
+		}
+		return result, nil
 	}
-	_ = out // TODO: JSON 파싱 ([]string 형식)
-	return nil, nil
+
+	// JSON 파싱: ["image1", "image2", ...]
+	var names []string
+	if err := json.Unmarshal(out, &names); err != nil {
+		return nil, fmt.Errorf("rbd ls parse: %w", err)
+	}
+
+	result := make([]Volume, 0, len(names))
+	for _, name := range names {
+		result = append(result, Volume{
+			ID:   fmt.Sprintf("rbd-%s", strings.ReplaceAll(name, "/", "-")),
+			Pool: pool,
+			Name: name,
+			Path: fmt.Sprintf("rbd:%s/%s", pool, name),
+		})
+	}
+	return result, nil
 }
 
 // ExportVolume 은 "rbd export <id> <path>" 명령으로 RBD 이미지를 파일로 내보낸다.

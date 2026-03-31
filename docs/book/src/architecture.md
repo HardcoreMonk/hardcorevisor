@@ -8,7 +8,7 @@
 ├──────────────────────────────────────────────────────┤
 │  hcvctl (Go/Cobra)      │  REST + gRPC API          │  ← API Layer
 ├──────────────────────────────────────────────────────┤
-│  Go Controller           REST :8080 / gRPC :9090     │
+│  Go Controller           REST :18080 / gRPC :19090     │
 │  ┌──────────────────────────────────────────────────┐│
 │  │            Backend Selector (Auto/Manual)        ││  ← Dual VMM
 │  │     ┌──────────────┬──────────────────┐          ││
@@ -51,8 +51,8 @@
 외부 시스템과의 통신을 담당한다.
 
 - **hcvctl** (Go/Cobra): CLI 도구. `--output json|yaml|table` 출력 포맷 지원.
-- **REST API** (:8080): OpenAPI 3.0 기반 28개 엔드포인트.
-- **gRPC API** (:9090): 3개 서비스, 17개 RPC. Reflection 지원.
+- **REST API** (:18080): OpenAPI 3.0 기반 28개 엔드포인트.
+- **gRPC API** (:19090): 3개 서비스, 17개 RPC. Reflection 지원.
 
 ### Orchestration Layer (오케스트레이션 계층)
 

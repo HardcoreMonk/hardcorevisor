@@ -6,11 +6,11 @@
 
 # REST API server
 api:
-  addr: ":8080"                # HCV_API_ADDR
+  addr: ":18080"                # HCV_API_ADDR
 
 # gRPC server
 grpc:
-  addr: ":9090"                # HCV_GRPC_ADDR
+  addr: ":19090"                # HCV_GRPC_ADDR
 
 # etcd state store
 etcd:

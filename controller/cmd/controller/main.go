@@ -1,6 +1,6 @@
 // Package main — HardCoreVisor Controller (Go 오케스트레이션 레이어)
 //
-// VM 생명주기, 스토리지, 네트워크, HA를 REST API(:8080)와 gRPC(:9090)로
+// VM 생명주기, 스토리지, 네트워크, HA를 REST API(:18080)와 gRPC(:19090)로
 // 동시에 서비스하는 메인 프로세스이다.
 //
 // # 아키텍처 위치
@@ -10,7 +10,7 @@
 //	│        │ REST              │ REST    │
 //	│        ▼                   ▼         │
 //	│  ┌─── Controller (이 바이너리) ───┐  │
-//	│  │ REST API (:8080) + gRPC (:9090)│  │
+//	│  │ REST API (:18080) + gRPC (:19090)│  │
 //	│  │ Services: Compute, Storage,    │  │
 //	│  │   Network, Peripheral, HA      │  │
 //	│  └───────────────────────────────-┘  │
@@ -51,6 +51,7 @@ import (
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/logging"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/network"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/task"
+	"github.com/HardcoreMonk/hardcorevisor/controller/internal/tracing"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/peripheral"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/storage"
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/store"
@@ -68,8 +69,22 @@ func main() {
 		cfg = config.DefaultConfig()
 	}
 
+	// ── 설정 유효성 검증 ──
+	if warnings := cfg.Validate(); len(warnings) > 0 {
+		for _, w := range warnings {
+			fmt.Printf("CONFIG WARNING: %s\n", w)
+		}
+	}
+
 	// ── 구조화 로깅 초기화 (slog 기반, text/json 형식) ──
 	logging.Setup(cfg.Log.Level, cfg.Log.Format)
+
+	// ── OpenTelemetry 분산 트레이싱 초기화 (HCV_OTEL_ENDPOINT 설정 시 활성) ──
+	tracingShutdown, err := tracing.Setup("hardcorevisor-controller", cfg.Otel.Endpoint)
+	if err != nil {
+		slog.Warn("tracing setup failed", "error", err)
+	}
+	defer tracingShutdown()
 
 	// ── 시그널 컨텍스트 (셧다운 대기용) ──
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -99,8 +114,16 @@ func main() {
 	computeSvc := compute.NewComputeService(selector, rustVMM)
 
 	// ── 상태 저장소 (etcd 또는 인메모리 폴백) ──
-	kvStore := store.NewStore(cfg.Etcd.Endpoints)
-	defer kvStore.Close()
+	rawStore := store.NewStore(cfg.Etcd.Endpoints)
+	defer rawStore.Close()
+	// Circuit Breaker로 래핑 — etcd 장애 시 5회 실패 후 30초 차단
+	var kvStore store.Store
+	if _, isMemory := rawStore.(*store.MemoryStore); !isMemory {
+		kvStore = store.NewResilientStore(rawStore)
+		slog.Info("etcd store protected by circuit breaker")
+	} else {
+		kvStore = rawStore
+	}
 
 	// 실제 저장소(etcd) 사용 시 PersistentComputeService로 래핑하여 VM 상태 영속화
 	var computeProvider compute.ComputeProvider = computeSvc
@@ -211,6 +234,9 @@ func main() {
 	} else {
 		defer userDB.Close()
 		userDB.SeedDefaultAdmin()
+		if cfg.Auth.JWTSecret == "" {
+			slog.Warn("HCV_JWT_SECRET not set — using random key (tokens invalidated on restart)")
+		}
 		jwtSvc := auth.NewJWTService(cfg.Auth.JWTSecret, 24*time.Hour)
 		authServices = &api.AuthServices{
 			UserDB:     userDB,

@@ -1,7 +1,9 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ .Release.Name }}-controller
+  name: {{ include "hardcorevisor.fullname" . }}-controller
+  labels:
+    {{- include "hardcorevisor.labels" . | nindent 4 }}
 spec:
   type: {{ .Values.service.type }}
   ports:
@@ -12,4 +14,4 @@ spec:
       targetPort: grpc
       name: grpc
   selector:
-    app: hardcorevisor
+    {{- include "hardcorevisor.selectorLabels" . | nindent 4 }}

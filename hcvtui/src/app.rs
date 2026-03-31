@@ -211,14 +211,14 @@ impl App {
     /// 새 App 인스턴스를 생성한다.
     ///
     /// `HCV_API_ADDR` 환경변수가 설정되어 있으면 해당 주소의 Controller에 연결한다.
-    /// 미설정 시 기본값 `http://localhost:8080/api/v1`을 사용한다.
+    /// 미설정 시 기본값 `http://localhost:18080/api/v1`을 사용한다.
     ///
     /// # 예시
     /// ```bash
-    /// HCV_API_ADDR=192.168.1.100:8080 cargo run -p hcvtui
+    /// HCV_API_ADDR=192.168.1.100:18080 cargo run -p hcvtui
     /// ```
     pub fn new() -> Self {
-        // 환경변수에서 API 주소를 읽어온다 (예: "192.168.1.100:8080")
+        // 환경변수에서 API 주소를 읽어온다 (예: "192.168.1.100:18080")
         let api_addr = std::env::var("HCV_API_ADDR")
             .ok()
             .map(|addr| format!("http://{}/api/v1", addr.trim_start_matches("http://")));

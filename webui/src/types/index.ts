@@ -93,6 +93,7 @@ export interface Task {
   status: string
   progress: number
   created_at: string
+  result?: string
 }
 
 export interface VersionInfo {
@@ -109,4 +110,73 @@ export interface CreateVMRequest {
   memory_mb: number
   backend?: string
   type?: string
+}
+
+export interface Device {
+  id: string
+  type: string
+  name: string
+  status: string
+  iommu_group: string
+  vm_handle: number | null
+}
+
+export interface Backup {
+  id: string
+  vm_id: number
+  vm_name: string
+  pool: string
+  created_at: string
+}
+
+export interface Snapshot {
+  id: string
+  vm_id: number
+  vm_name: string
+  created_at: string
+}
+
+export interface Template {
+  id: string
+  name: string
+  vcpus: number
+  memory_mb: number
+  backend: string
+  description: string
+}
+
+export interface Image {
+  id: string
+  name: string
+  format: string
+  path: string
+  os_type: string
+  size_bytes: number
+}
+
+export interface CreateVolumeRequest {
+  pool: string
+  name: string
+  size_bytes: number
+  format: string
+}
+
+export interface CreateZoneRequest {
+  name: string
+  type: string
+  bridge: string
+  mtu: number
+}
+
+export interface CreateBackupRequest {
+  vm_id: number
+  vm_name: string
+  pool: string
+}
+
+export interface CreateImageRequest {
+  name: string
+  format: string
+  path: string
+  os_type: string
 }

@@ -34,6 +34,10 @@ import (
 	"time"
 )
 
+// loginLimiter — 로그인 엔드포인트 전용 rate limiter.
+// 분당 10회로 제한하여 브루트포스 공격을 방어한다.
+var loginLimiter = NewRateLimiter(10.0/60.0, 10) // 10 req/min, burst 10
+
 // handleAuthLogin — 사용자 인증 후 JWT 토큰을 발급한다 (POST /api/v1/auth/login).
 //
 // 요청 본문: {"username": "...", "password": "..."}
@@ -49,6 +53,12 @@ import (
 //   - 401: 잘못된 인증 정보 (사용자 없음 또는 비밀번호 불일치)
 //   - 500: JWT 토큰 생성 실패 (내부 에러)
 func (svc *Services) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
+	if !loginLimiter.Allow() {
+		w.Header().Set("Retry-After", "60")
+		writeError(w, http.StatusTooManyRequests, ErrCodeTooManyRequests,
+			"login rate limit exceeded, try again in 60 seconds")
+		return
+	}
 	var req struct {
 		Username string `json:"username"`
 		Password string `json:"password"`

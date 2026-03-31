@@ -21,7 +21,7 @@ ls -la target/hcvctl
 
 | 플래그 | 단축 | 기본값 | 설명 |
 |--------|------|--------|------|
-| `--api` | | `localhost:8080` | Controller API 주소 |
+| `--api` | | `localhost:18080` | Controller API 주소 |
 | `--output` | `-o` | `table` | 출력 포맷 (json, yaml, table) |
 | `--tls-skip-verify` | | `false` | TLS 인증서 검증 건너뛰기 |
 | `--user` | | | Basic Auth 사용자명 |

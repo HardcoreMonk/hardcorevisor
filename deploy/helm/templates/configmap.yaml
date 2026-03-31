@@ -5,9 +5,9 @@ metadata:
 data:
   hcv.yaml: |
     api:
-      addr: ":8080"
+      addr: ":18080"
     grpc:
-      addr: ":9090"
+      addr: ":19090"
     log:
       level: {{ .Values.config.logLevel }}
       format: {{ .Values.config.logFormat }}

@@ -50,7 +50,7 @@ func setupE2E(t *testing.T) (*httptest.Server, func()) {
 	// OAuth2 프로바이더 (시뮬레이션 모드)
 	oauth2Provider, _ := auth.NewOAuth2Provider(auth.OAuth2Config{
 		ClientID:    "e2e-test-client",
-		RedirectURL: "http://localhost:8080/api/v1/auth/oauth2/callback",
+		RedirectURL: "http://localhost:18080/api/v1/auth/oauth2/callback",
 	})
 
 	svc := &api.Services{

@@ -3,70 +3,98 @@ info:
   title: HardCoreVisor API
   description: >
     REST API for HardCoreVisor — a hybrid virtualisation platform combining
-    Rust (KVM core) and Go (orchestration controller) with dual VMM backends
-    (rust-vmm for high-performance Linux microVMs, QEMU for general-purpose VMs).
+    Rust (KVM core) and Go (orchestration controller) with triple VMM backends
+    (rust-vmm for high-performance Linux microVMs, QEMU for general-purpose VMs,
+    LXC for lightweight containers).
   version: "0.1.0"
   license:
     name: AGPL-3.0
     url: https://www.gnu.org/licenses/agpl-3.0.html
 
 servers:
-  - url: http://localhost:8080
+  - url: http://localhost:18080
     description: Local development controller
 
 tags:
-  - name: health
-    description: Health and version endpoints
-  - name: compute
-    description: VM lifecycle management
-  - name: backends
-    description: VMM backend information
-  - name: storage
-    description: Storage pool and volume management
-  - name: network
+  - name: Infrastructure
+    description: Health, readiness, metrics, and WebSocket
+  - name: Compute
+    description: VM and container lifecycle management
+  - name: Storage
+    description: Storage pools, volumes, and snapshot operations
+  - name: Network
     description: SDN zones, virtual networks, and firewall rules
-  - name: devices
+  - name: Devices
     description: Peripheral device passthrough (GPU/NIC/USB)
-  - name: cluster
-    description: HA cluster status, nodes, and fencing
-  - name: backups
+  - name: Cluster
+    description: HA cluster status, nodes, leader election, and fencing
+  - name: Backups
     description: VM backup management
-  - name: nodes
-    description: Node resource information
-  - name: monitoring
-    description: Prometheus metrics
+  - name: Snapshots
+    description: VM snapshot CRUD and restore
+  - name: Templates
+    description: VM/container template management
+  - name: Images
+    description: Disk image registry
+  - name: Tasks
+    description: Async task tracking
+  - name: Auth
+    description: JWT authentication, RBAC, and OAuth2
+  - name: Monitoring
+    description: System statistics and webhook alerts
+  - name: Docs
+    description: API documentation (Swagger UI, OpenAPI spec)
 
 paths:
-  # ── Health / Meta ──────────────────────────────────────
+  # ── Infrastructure ─────────────────────────────────────
   /healthz:
     get:
-      tags: [health]
-      summary: Health check
+      tags: [Infrastructure]
+      summary: Liveness probe
       operationId: healthCheck
       responses:
         "200":
-          description: Service is healthy
+          description: Service is alive
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthResponse"
 
-  /api/v1/version:
+  /readyz:
     get:
-      tags: [health]
-      summary: Version information
-      operationId: getVersion
+      tags: [Infrastructure]
+      summary: Readiness probe
+      operationId: readinessCheck
       responses:
         "200":
-          description: Version metadata
+          description: Service is ready to accept traffic
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/VersionResponse"
+                $ref: "#/components/schemas/HealthResponse"
+        "503":
+          description: Service not ready
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+
+  /startupz:
+    get:
+      tags: [Infrastructure]
+      summary: Startup probe
+      operationId: startupCheck
+      responses:
+        "200":
+          description: Service has started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
 
   /metrics:
     get:
-      tags: [monitoring]
+      tags: [Infrastructure]
       summary: Prometheus metrics
       operationId: getMetrics
       responses:
@@ -77,12 +105,44 @@ paths:
               schema:
                 type: string
 
-  # ── Compute (VMs) ──────────────────────────────────────
+  /ws:
+    get:
+      tags: [Infrastructure]
+      summary: WebSocket real-time event stream
+      operationId: websocketConnect
+      description: Upgrades to WebSocket. Streams VM state changes and cluster events.
+      responses:
+        "101":
+          description: Switching protocols to WebSocket
+
+  # ── Compute ────────────────────────────────────────────
+  /api/v1/version:
+    get:
+      tags: [Compute]
+      summary: Version information
+      operationId: getVersion
+      responses:
+        "200":
+          description: Version metadata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VersionResponse"
+
   /api/v1/vms:
     get:
-      tags: [compute]
-      summary: List all VMs
+      tags: [Compute]
+      summary: List VMs
       operationId: listVMs
+      parameters:
+        - name: type
+          in: query
+          description: Filter by workload type
+          schema:
+            type: string
+            enum: [vm, container]
+        - $ref: "#/components/parameters/offset"
+        - $ref: "#/components/parameters/limit"
       responses:
         "200":
           description: Array of VMs
@@ -94,8 +154,8 @@ paths:
                   $ref: "#/components/schemas/VMInfo"
 
     post:
-      tags: [compute]
-      summary: Create a new VM
+      tags: [Compute]
+      summary: Create a VM or container
       operationId: createVM
       requestBody:
         required: true
@@ -111,21 +171,13 @@ paths:
               schema:
                 $ref: "#/components/schemas/VMInfo"
         "400":
-          description: Invalid request
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/BadRequest"
         "500":
-          description: Backend error
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/InternalError"
 
   /api/v1/vms/{id}:
     get:
-      tags: [compute]
+      tags: [Compute]
       summary: Get VM by ID
       operationId: getVM
       parameters:
@@ -137,21 +189,11 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/VMInfo"
-        "400":
-          description: Invalid VM ID
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
         "404":
-          description: VM not found
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/NotFound"
 
     delete:
-      tags: [compute]
+      tags: [Compute]
       summary: Delete a VM
       operationId: deleteVM
       parameters:
@@ -159,22 +201,12 @@ paths:
       responses:
         "204":
           description: VM deleted
-        "400":
-          description: Invalid VM ID
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
         "404":
-          description: VM not found
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/NotFound"
 
   /api/v1/vms/{id}/start:
     post:
-      tags: [compute]
+      tags: [Compute]
       summary: Start a VM
       operationId: startVM
       parameters:
@@ -187,21 +219,13 @@ paths:
               schema:
                 $ref: "#/components/schemas/VMInfo"
         "404":
-          description: VM not found
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/NotFound"
         "409":
-          description: Invalid state transition
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/Conflict"
 
   /api/v1/vms/{id}/stop:
     post:
-      tags: [compute]
+      tags: [Compute]
       summary: Stop a VM
       operationId: stopVM
       parameters:
@@ -214,21 +238,13 @@ paths:
               schema:
                 $ref: "#/components/schemas/VMInfo"
         "404":
-          description: VM not found
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/NotFound"
         "409":
-          description: Invalid state transition
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/Conflict"
 
   /api/v1/vms/{id}/pause:
     post:
-      tags: [compute]
+      tags: [Compute]
       summary: Pause a VM
       operationId: pauseVM
       parameters:
@@ -241,21 +257,13 @@ paths:
               schema:
                 $ref: "#/components/schemas/VMInfo"
         "404":
-          description: VM not found
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/NotFound"
         "409":
-          description: Invalid state transition
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/Conflict"
 
   /api/v1/vms/{id}/resume:
     post:
-      tags: [compute]
+      tags: [Compute]
       summary: Resume a paused VM
       operationId: resumeVM
       parameters:
@@ -268,24 +276,15 @@ paths:
               schema:
                 $ref: "#/components/schemas/VMInfo"
         "404":
-          description: VM not found
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/NotFound"
         "409":
-          description: Invalid state transition
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/Conflict"
 
-  /api/v1/vms/{id}/exec:
+  /api/v1/vms/{id}/migrate:
     post:
-      tags: [compute]
-      summary: Execute a command in a container
-      description: Only works for LXC containers (type=container). Container must be running.
-      operationId: execContainer
+      tags: [Compute]
+      summary: Start live migration
+      operationId: migrateVM
       parameters:
         - $ref: "#/components/parameters/vmId"
       requestBody:
@@ -293,32 +292,57 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              required: [command]
-              properties:
-                command:
-                  type: array
-                  items:
-                    type: string
-                  example: ["ls", "-la"]
+              $ref: "#/components/schemas/MigrateRequest"
       responses:
-        "200":
-          description: Command output
+        "202":
+          description: Migration started (async)
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  output:
-                    type: string
-        "400":
-          description: Not a container or empty command
+                $ref: "#/components/schemas/MigrateResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
         "409":
-          description: Container not running
+          $ref: "#/components/responses/Conflict"
+
+  /api/v1/vms/{id}/migration:
+    get:
+      tags: [Compute]
+      summary: Get migration status
+      operationId: getMigrationStatus
+      parameters:
+        - $ref: "#/components/parameters/vmId"
+      responses:
+        "200":
+          description: Migration status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MigrationStatus"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+    delete:
+      tags: [Compute]
+      summary: Cancel in-progress migration
+      operationId: cancelMigration
+      parameters:
+        - $ref: "#/components/parameters/vmId"
+      responses:
+        "200":
+          description: Migration cancelled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
 
   /api/v1/vms/{id}/stats:
     get:
-      tags: [compute]
+      tags: [Compute]
       summary: Get VM/container resource statistics
       operationId: getVMStats
       parameters:
@@ -331,36 +355,42 @@ paths:
               schema:
                 $ref: "#/components/schemas/ContainerStats"
         "404":
-          description: VM not found
+          $ref: "#/components/responses/NotFound"
 
-  /api/v1/templates/lxc:
-    get:
-      tags: [compute]
-      summary: List available LXC distribution templates
-      operationId: listLXCTemplates
+  /api/v1/vms/{id}/exec:
+    post:
+      tags: [Compute]
+      summary: Execute command in a container
+      description: Only works for LXC containers. Container must be running.
+      operationId: execContainer
+      parameters:
+        - $ref: "#/components/parameters/vmId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExecRequest"
       responses:
         "200":
-          description: Template list
+          description: Command output
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  templates:
-                    type: array
-                    items:
-                      type: string
-                    example: ["ubuntu", "alpine", "debian", "centos"]
+                $ref: "#/components/schemas/ExecResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/Conflict"
 
-  # ── Backends ───────────────────────────────────────────
   /api/v1/backends:
     get:
-      tags: [backends]
+      tags: [Compute]
       summary: List VMM backends
       operationId: listBackends
       responses:
         "200":
-          description: Array of registered VMM backends
+          description: Registered VMM backends
           content:
             application/json:
               schema:
@@ -371,7 +401,7 @@ paths:
   # ── Storage ────────────────────────────────────────────
   /api/v1/storage/pools:
     get:
-      tags: [storage]
+      tags: [Storage]
       summary: List storage pools
       operationId: listStoragePools
       responses:
@@ -386,14 +416,13 @@ paths:
 
   /api/v1/storage/volumes:
     get:
-      tags: [storage]
+      tags: [Storage]
       summary: List storage volumes
       operationId: listStorageVolumes
       parameters:
         - name: pool
           in: query
-          required: false
-          description: Filter volumes by pool name
+          description: Filter by pool name
           schema:
             type: string
       responses:
@@ -407,7 +436,7 @@ paths:
                   $ref: "#/components/schemas/StorageVolume"
 
     post:
-      tags: [storage]
+      tags: [Storage]
       summary: Create a storage volume
       operationId: createStorageVolume
       requestBody:
@@ -424,38 +453,190 @@ paths:
               schema:
                 $ref: "#/components/schemas/StorageVolume"
         "400":
-          description: Invalid request or pool not found
+          $ref: "#/components/responses/BadRequest"
+
+  /api/v1/storage/volumes/{id}:
+    get:
+      tags: [Storage]
+      summary: Get volume by ID
+      operationId: getStorageVolume
+      parameters:
+        - $ref: "#/components/parameters/resourceId"
+      responses:
+        "200":
+          description: Volume details
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ErrorResponse"
+                $ref: "#/components/schemas/StorageVolume"
+        "404":
+          $ref: "#/components/responses/NotFound"
 
-  /api/v1/storage/volumes/{id}:
     delete:
-      tags: [storage]
+      tags: [Storage]
       summary: Delete a storage volume
       operationId: deleteStorageVolume
       parameters:
-        - name: id
-          in: path
-          required: true
-          description: Volume ID
-          schema:
-            type: string
+        - $ref: "#/components/parameters/resourceId"
       responses:
         "204":
           description: Volume deleted
         "404":
-          description: Volume not found
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/storage/volumes/{id}/resize:
+    post:
+      tags: [Storage]
+      summary: Resize a volume
+      operationId: resizeStorageVolume
+      parameters:
+        - $ref: "#/components/parameters/resourceId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [size_bytes]
+              properties:
+                size_bytes:
+                  type: integer
+                  format: int64
+                  description: New volume size in bytes
+      responses:
+        "200":
+          description: Volume resized
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ErrorResponse"
+                $ref: "#/components/schemas/StorageVolume"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/storage/volumes/{id}/export:
+    post:
+      tags: [Storage]
+      summary: Export a volume to file
+      operationId: exportStorageVolume
+      parameters:
+        - $ref: "#/components/parameters/resourceId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [path]
+              properties:
+                path:
+                  type: string
+                  description: Destination file path
+      responses:
+        "200":
+          description: Volume exported
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/storage/volumes/import:
+    post:
+      tags: [Storage]
+      summary: Import a volume from file
+      operationId: importStorageVolume
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [path, pool, name]
+              properties:
+                path:
+                  type: string
+                  description: Source file path
+                pool:
+                  type: string
+                  description: Target storage pool
+                name:
+                  type: string
+                  description: Volume name
+      responses:
+        "201":
+          description: Volume imported
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StorageVolume"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /api/v1/storage/snapshots/{id}:
+    delete:
+      tags: [Storage]
+      summary: Delete a storage snapshot
+      operationId: deleteStorageSnapshot
+      parameters:
+        - $ref: "#/components/parameters/resourceId"
+      responses:
+        "204":
+          description: Snapshot deleted
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/storage/snapshots/{id}/rollback:
+    post:
+      tags: [Storage]
+      summary: Rollback volume to snapshot
+      operationId: rollbackStorageSnapshot
+      parameters:
+        - $ref: "#/components/parameters/resourceId"
+      responses:
+        "200":
+          description: Rollback completed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/storage/snapshots/{id}/clone:
+    post:
+      tags: [Storage]
+      summary: Clone a snapshot into a new volume
+      operationId: cloneStorageSnapshot
+      parameters:
+        - $ref: "#/components/parameters/resourceId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  description: Name for the cloned volume
+      responses:
+        "201":
+          description: Clone created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StorageVolume"
+        "404":
+          $ref: "#/components/responses/NotFound"
 
   # ── Network ────────────────────────────────────────────
   /api/v1/network/zones:
     get:
-      tags: [network]
+      tags: [Network]
       summary: List SDN zones
       operationId: listNetworkZones
       responses:
@@ -468,16 +649,53 @@ paths:
                 items:
                   $ref: "#/components/schemas/NetworkZone"
 
+    post:
+      tags: [Network]
+      summary: Create an SDN zone
+      operationId: createNetworkZone
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateZoneRequest"
+      responses:
+        "201":
+          description: Zone created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NetworkZone"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /api/v1/network/zones/{name}:
+    delete:
+      tags: [Network]
+      summary: Delete an SDN zone
+      operationId: deleteNetworkZone
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: Zone name
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Zone deleted
+        "404":
+          $ref: "#/components/responses/NotFound"
+
   /api/v1/network/vnets:
     get:
-      tags: [network]
+      tags: [Network]
       summary: List virtual networks
       operationId: listVNets
       parameters:
         - name: zone
           in: query
-          required: false
-          description: Filter VNets by zone name
+          description: Filter by zone name
           schema:
             type: string
       responses:
@@ -492,7 +710,7 @@ paths:
 
   /api/v1/network/firewall:
     get:
-      tags: [network]
+      tags: [Network]
       summary: List firewall rules
       operationId: listFirewallRules
       responses:
@@ -505,16 +723,15 @@ paths:
                 items:
                   $ref: "#/components/schemas/FirewallRule"
 
-  # ── Devices (Peripheral) ───────────────────────────────
+  # ── Devices ────────────────────────────────────────────
   /api/v1/devices:
     get:
-      tags: [devices]
+      tags: [Devices]
       summary: List passthrough devices
       operationId: listDevices
       parameters:
         - name: type
           in: query
-          required: false
           description: Filter by device type
           schema:
             type: string
@@ -531,16 +748,11 @@ paths:
 
   /api/v1/devices/{id}/attach:
     post:
-      tags: [devices]
-      summary: Attach a device to a VM
+      tags: [Devices]
+      summary: Attach device to a VM
       operationId: attachDevice
       parameters:
-        - name: id
-          in: path
-          required: true
-          description: Device ID
-          schema:
-            type: string
+        - $ref: "#/components/parameters/resourceId"
       requestBody:
         required: true
         content:
@@ -555,30 +767,17 @@ paths:
               schema:
                 $ref: "#/components/schemas/StatusResponse"
         "400":
-          description: Invalid request
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/BadRequest"
         "409":
-          description: Device already attached
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/Conflict"
 
   /api/v1/devices/{id}/detach:
     post:
-      tags: [devices]
-      summary: Detach a device from a VM
+      tags: [Devices]
+      summary: Detach device from VM
       operationId: detachDevice
       parameters:
-        - name: id
-          in: path
-          required: true
-          description: Device ID
-          schema:
-            type: string
+        - $ref: "#/components/parameters/resourceId"
       responses:
         "200":
           description: Device detached
@@ -587,16 +786,12 @@ paths:
               schema:
                 $ref: "#/components/schemas/StatusResponse"
         "409":
-          description: Device not attached or not found
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/Conflict"
 
-  # ── Cluster (HA) ───────────────────────────────────────
+  # ── Cluster ────────────────────────────────────────────
   /api/v1/cluster/status:
     get:
-      tags: [cluster]
+      tags: [Cluster]
       summary: Get cluster status
       operationId: getClusterStatus
       responses:
@@ -609,7 +804,7 @@ paths:
 
   /api/v1/cluster/nodes:
     get:
-      tags: [cluster]
+      tags: [Cluster]
       summary: List HA cluster nodes
       operationId: listClusterNodes
       responses:
@@ -622,9 +817,28 @@ paths:
                 items:
                   $ref: "#/components/schemas/ClusterNode"
 
+  /api/v1/cluster/leader:
+    get:
+      tags: [Cluster]
+      summary: Get current cluster leader
+      operationId: getClusterLeader
+      responses:
+        "200":
+          description: Leader information
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  leader:
+                    type: string
+                  since:
+                    type: string
+                    format: date-time
+
   /api/v1/cluster/fence/{node}:
     post:
-      tags: [cluster]
+      tags: [Cluster]
       summary: Fence a cluster node
       operationId: fenceNode
       parameters:
@@ -642,28 +856,67 @@ paths:
               $ref: "#/components/schemas/FenceRequest"
       responses:
         "200":
-          description: Fencing operation result
+          description: Fencing result
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/FenceEvent"
         "400":
-          description: Invalid request
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/BadRequest"
         "404":
-          description: Node not found
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/cluster/promote:
+    post:
+      tags: [Cluster]
+      summary: Promote this node to leader
+      operationId: promoteNode
+      responses:
+        "200":
+          description: Node promoted
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ErrorResponse"
+                $ref: "#/components/schemas/StatusResponse"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/v1/nodes:
+    get:
+      tags: [Cluster]
+      summary: List node resource information
+      operationId: listNodes
+      responses:
+        "200":
+          description: Array of nodes
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/NodeInfo"
+
+  /api/v1/nodes/{id}:
+    get:
+      tags: [Cluster]
+      summary: Get node details
+      operationId: getNode
+      parameters:
+        - $ref: "#/components/parameters/resourceId"
+      responses:
+        "200":
+          description: Node details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NodeInfo"
+        "404":
+          $ref: "#/components/responses/NotFound"
 
   # ── Backups ────────────────────────────────────────────
   /api/v1/backups:
     get:
-      tags: [backups]
+      tags: [Backups]
       summary: List all backups
       operationId: listBackups
       responses:
@@ -677,7 +930,7 @@ paths:
                   $ref: "#/components/schemas/BackupInfo"
 
     post:
-      tags: [backups]
+      tags: [Backups]
       summary: Create a VM backup
       operationId: createBackup
       requestBody:
@@ -694,24 +947,15 @@ paths:
               schema:
                 $ref: "#/components/schemas/BackupInfo"
         "400":
-          description: Invalid request
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/BadRequest"
 
   /api/v1/backups/{id}:
     get:
-      tags: [backups]
+      tags: [Backups]
       summary: Get backup by ID
       operationId: getBackup
       parameters:
-        - name: id
-          in: path
-          required: true
-          description: Backup ID
-          schema:
-            type: string
+        - $ref: "#/components/parameters/resourceId"
       responses:
         "200":
           description: Backup details
@@ -720,51 +964,594 @@ paths:
               schema:
                 $ref: "#/components/schemas/BackupInfo"
         "404":
-          description: Backup not found
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/NotFound"
 
     delete:
-      tags: [backups]
+      tags: [Backups]
       summary: Delete a backup
       operationId: deleteBackup
       parameters:
-        - name: id
-          in: path
-          required: true
-          description: Backup ID
-          schema:
-            type: string
+        - $ref: "#/components/parameters/resourceId"
       responses:
         "204":
           description: Backup deleted
         "404":
-          description: Backup not found
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/NotFound"
 
-  # ── Nodes ──────────────────────────────────────────────
-  /api/v1/nodes:
+  # ── Snapshots ──────────────────────────────────────────
+  /api/v1/snapshots:
     get:
-      tags: [nodes]
-      summary: List node resource information
-      operationId: listNodes
+      tags: [Snapshots]
+      summary: List VM snapshots
+      operationId: listSnapshots
+      parameters:
+        - name: vm_id
+          in: query
+          description: Filter by VM ID
+          schema:
+            type: integer
       responses:
         "200":
-          description: Array of nodes with resource usage
+          description: Array of snapshots
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  $ref: "#/components/schemas/NodeInfo"
+                  $ref: "#/components/schemas/SnapshotInfo"
+
+    post:
+      tags: [Snapshots]
+      summary: Create a VM snapshot
+      operationId: createSnapshot
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSnapshotRequest"
+      responses:
+        "201":
+          description: Snapshot created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SnapshotInfo"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /api/v1/snapshots/{id}:
+    get:
+      tags: [Snapshots]
+      summary: Get snapshot by ID
+      operationId: getSnapshot
+      parameters:
+        - $ref: "#/components/parameters/resourceId"
+      responses:
+        "200":
+          description: Snapshot details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SnapshotInfo"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+    delete:
+      tags: [Snapshots]
+      summary: Delete a snapshot
+      operationId: deleteSnapshot
+      parameters:
+        - $ref: "#/components/parameters/resourceId"
+      responses:
+        "204":
+          description: Snapshot deleted
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/snapshots/{id}/restore:
+    post:
+      tags: [Snapshots]
+      summary: Restore VM from snapshot
+      operationId: restoreSnapshot
+      parameters:
+        - $ref: "#/components/parameters/resourceId"
+      responses:
+        "200":
+          description: Snapshot restored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ── Templates ──────────────────────────────────────────
+  /api/v1/templates:
+    get:
+      tags: [Templates]
+      summary: List VM templates
+      operationId: listTemplates
+      responses:
+        "200":
+          description: Array of templates
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TemplateInfo"
+
+    post:
+      tags: [Templates]
+      summary: Create a VM template
+      operationId: createTemplate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTemplateRequest"
+      responses:
+        "201":
+          description: Template created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TemplateInfo"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /api/v1/templates/{id}:
+    get:
+      tags: [Templates]
+      summary: Get template by ID
+      operationId: getTemplate
+      parameters:
+        - $ref: "#/components/parameters/resourceId"
+      responses:
+        "200":
+          description: Template details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TemplateInfo"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+    delete:
+      tags: [Templates]
+      summary: Delete a template
+      operationId: deleteTemplate
+      parameters:
+        - $ref: "#/components/parameters/resourceId"
+      responses:
+        "204":
+          description: Template deleted
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/templates/{id}/deploy:
+    post:
+      tags: [Templates]
+      summary: Deploy VM from template
+      operationId: deployTemplate
+      parameters:
+        - $ref: "#/components/parameters/resourceId"
+      responses:
+        "201":
+          description: VM created from template
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VMInfo"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/templates/lxc:
+    get:
+      tags: [Templates]
+      summary: List LXC distribution templates
+      operationId: listLXCTemplates
+      responses:
+        "200":
+          description: Available LXC templates
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  templates:
+                    type: array
+                    items:
+                      type: string
+                    example: ["ubuntu", "alpine", "debian", "centos"]
+
+  # ── Images ─────────────────────────────────────────────
+  /api/v1/images:
+    get:
+      tags: [Images]
+      summary: List registered images
+      operationId: listImages
+      responses:
+        "200":
+          description: Array of images
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ImageInfo"
+
+    post:
+      tags: [Images]
+      summary: Register a disk image
+      operationId: createImage
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateImageRequest"
+      responses:
+        "201":
+          description: Image registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImageInfo"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /api/v1/images/{id}:
+    get:
+      tags: [Images]
+      summary: Get image by ID
+      operationId: getImage
+      parameters:
+        - $ref: "#/components/parameters/resourceId"
+      responses:
+        "200":
+          description: Image details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImageInfo"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+    delete:
+      tags: [Images]
+      summary: Delete an image
+      operationId: deleteImage
+      parameters:
+        - $ref: "#/components/parameters/resourceId"
+      responses:
+        "204":
+          description: Image deleted
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ── Tasks ──────────────────────────────────────────────
+  /api/v1/tasks:
+    get:
+      tags: [Tasks]
+      summary: List async tasks
+      operationId: listTasks
+      parameters:
+        - name: type
+          in: query
+          description: Filter by task type
+          schema:
+            type: string
+        - name: status
+          in: query
+          description: Filter by task status
+          schema:
+            type: string
+            enum: [pending, running, completed, failed]
+      responses:
+        "200":
+          description: Array of tasks
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TaskInfo"
+
+  /api/v1/tasks/{id}:
+    get:
+      tags: [Tasks]
+      summary: Get task by ID
+      operationId: getTask
+      parameters:
+        - $ref: "#/components/parameters/resourceId"
+      responses:
+        "200":
+          description: Task details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskInfo"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+    delete:
+      tags: [Tasks]
+      summary: Delete a completed task
+      operationId: deleteTask
+      parameters:
+        - $ref: "#/components/parameters/resourceId"
+      responses:
+        "204":
+          description: Task deleted
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ── Auth ───────────────────────────────────────────────
+  /api/v1/auth/login:
+    post:
+      tags: [Auth]
+      summary: Authenticate and get JWT token
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: JWT token issued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Refresh JWT token
+      operationId: refreshToken
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: New token issued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/auth/logout:
+    post:
+      tags: [Auth]
+      summary: Revoke JWT token (blacklist)
+      operationId: logout
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Token revoked
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/auth/users:
+    get:
+      tags: [Auth]
+      summary: List users (admin only)
+      operationId: listUsers
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Array of users
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/UserInfo"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+    post:
+      tags: [Auth]
+      summary: Create a user (admin only)
+      operationId: createUser
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateUserRequest"
+      responses:
+        "201":
+          description: User created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserInfo"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v1/auth/users/{username}:
+    delete:
+      tags: [Auth]
+      summary: Delete a user (admin only)
+      operationId: deleteUser
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: username
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: User deleted
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/auth/oauth2/providers:
+    get:
+      tags: [Auth]
+      summary: List configured OAuth2 providers
+      operationId: listOAuth2Providers
+      responses:
+        "200":
+          description: Provider list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  providers:
+                    type: array
+                    items:
+                      type: string
+                    example: ["github", "google"]
+
+  /api/v1/auth/oauth2/authorize:
+    get:
+      tags: [Auth]
+      summary: Start OAuth2 authorization flow
+      operationId: oauth2Authorize
+      parameters:
+        - name: provider
+          in: query
+          description: OAuth2 provider name
+          schema:
+            type: string
+      responses:
+        "302":
+          description: Redirect to OAuth2 provider
+
+  /api/v1/auth/oauth2/callback:
+    get:
+      tags: [Auth]
+      summary: OAuth2 callback endpoint
+      operationId: oauth2Callback
+      parameters:
+        - name: code
+          in: query
+          schema:
+            type: string
+        - name: state
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: JWT token after OAuth2 exchange
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  # ── Monitoring ─────────────────────────────────────────
+  /api/v1/system/stats:
+    get:
+      tags: [Monitoring]
+      summary: System-wide statistics
+      operationId: getSystemStats
+      responses:
+        "200":
+          description: System statistics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SystemStats"
+
+  /api/v1/api-info:
+    get:
+      tags: [Monitoring]
+      summary: API version information
+      operationId: getAPIInfo
+      responses:
+        "200":
+          description: API versioning info
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIInfo"
+
+  /api/v1/webhooks/alert:
+    post:
+      tags: [Monitoring]
+      summary: Receive alert webhook (e.g. from Alertmanager)
+      operationId: receiveAlertWebhook
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Alertmanager webhook payload
+      responses:
+        "200":
+          description: Alert received
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusResponse"
+
+  # ── Docs ───────────────────────────────────────────────
+  /api/v1/docs:
+    get:
+      tags: [Docs]
+      summary: Swagger UI
+      operationId: swaggerUI
+      responses:
+        "200":
+          description: Interactive API documentation (HTML)
+          content:
+            text/html:
+              schema:
+                type: string
+
+  /api/v1/docs/openapi.yaml:
+    get:
+      tags: [Docs]
+      summary: OpenAPI 3.0.3 spec file
+      operationId: getOpenAPISpec
+      responses:
+        "200":
+          description: OpenAPI YAML specification
+          content:
+            application/x-yaml:
+              schema:
+                type: string
 
 # ══════════════════════════════════════════════════════════
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    basicAuth:
+      type: http
+      scheme: basic
+
   parameters:
     vmId:
       name: id
@@ -775,23 +1562,101 @@ components:
         type: integer
         format: int32
 
+    resourceId:
+      name: id
+      in: path
+      required: true
+      description: Resource identifier
+      schema:
+        type: string
+
+    offset:
+      name: offset
+      in: query
+      description: Pagination offset
+      schema:
+        type: integer
+        default: 0
+
+    limit:
+      name: limit
+      in: query
+      description: Pagination limit
+      schema:
+        type: integer
+        default: 50
+
+  responses:
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ProblemDetail"
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ProblemDetail"
+    Conflict:
+      description: Invalid state transition or conflict
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ProblemDetail"
+    Unauthorized:
+      description: Authentication required
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ProblemDetail"
+    Forbidden:
+      description: Insufficient permissions
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ProblemDetail"
+    InternalError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ProblemDetail"
+
   schemas:
-    # ── Common ─────────────────────────────────────────
-    ErrorResponse:
+    # ── RFC 7807 Problem Detail ────────────────────────
+    ProblemDetail:
       type: object
-      required: [error]
+      required: [type, title, status]
       properties:
+        type:
+          type: string
+          description: URI reference identifying the problem type
+          example: "about:blank"
+        title:
+          type: string
+          description: Short human-readable summary
+        status:
+          type: integer
+          description: HTTP status code
+        detail:
+          type: string
+          description: Human-readable explanation
+        instance:
+          type: string
+          description: URI reference for this occurrence
         error:
           type: string
-          description: Human-readable error message
+          description: Legacy error field (backward compat)
 
+    # ── Common ─────────────────────────────────────────
     StatusResponse:
       type: object
       required: [status]
       properties:
         status:
           type: string
-          description: Operation result status
 
     HealthResponse:
       type: object
@@ -829,7 +1694,6 @@ components:
         id:
           type: integer
           format: int32
-          description: VM handle
         name:
           type: string
         state:
@@ -849,22 +1713,50 @@ components:
         type:
           type: string
           enum: [vm, container]
-          description: Workload type (vm or container)
         template:
           type: string
-          description: LXC template name (for containers)
         rootfs:
           type: string
-          description: Root filesystem path (for containers)
         ip_address:
           type: string
-          description: Container IP address
         arch:
           type: string
-          description: Architecture (e.g., amd64)
+        restart_policy:
+          type: string
+          enum: [always, on-failure, never]
         created_at:
           type: string
           format: date-time
+
+    CreateVMRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          description: VM name (defaults to "unnamed")
+        vcpus:
+          type: integer
+          format: int32
+          description: Number of vCPUs (defaults to 1)
+        memory_mb:
+          type: integer
+          format: int64
+          description: Memory in MiB (defaults to 512)
+        backend:
+          type: string
+          enum: [rustvmm, qemu, lxc]
+          description: VMM backend hint. Auto-selected if omitted.
+        type:
+          type: string
+          enum: [vm, container]
+          description: Workload type. "container" auto-selects LXC.
+        template:
+          type: string
+          description: LXC template name (e.g., ubuntu, alpine)
+        restart_policy:
+          type: string
+          enum: [always, on-failure, never]
+          description: Restart policy for HA failover
 
     ContainerStats:
       type: object
@@ -887,35 +1779,59 @@ components:
           type: integer
           format: int64
 
-    CreateVMRequest:
+    ExecRequest:
+      type: object
+      required: [command]
+      properties:
+        command:
+          type: array
+          items:
+            type: string
+          example: ["ls", "-la"]
+
+    ExecResponse:
       type: object
       properties:
-        name:
+        output:
           type: string
-          description: VM name (defaults to "unnamed")
-        vcpus:
+
+    MigrateRequest:
+      type: object
+      required: [target_node]
+      properties:
+        target_node:
+          type: string
+          description: Destination node name
+
+    MigrateResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: migration_started
+        task_id:
+          type: string
+          description: Async task ID for tracking
+
+    MigrationStatus:
+      type: object
+      properties:
+        vm_id:
           type: integer
           format: int32
-          description: Number of vCPUs (defaults to 1)
-        memory_mb:
+        status:
+          type: string
+          enum: [pending, pre_copy, stop_and_copy, completing, completed, failed, cancelled]
+        source_node:
+          type: string
+        target_node:
+          type: string
+        progress:
           type: integer
-          format: int64
-          description: Memory in MiB (defaults to 512)
-        backend:
+          description: 0-100 percentage
+        started_at:
           type: string
-          enum: [rustvmm, qemu, lxc]
-          description: >
-            VMM backend to use. If omitted, BackendSelector chooses
-            automatically based on workload characteristics.
-            For containers, use "lxc" or set type to "container".
-        type:
-          type: string
-          enum: [vm, container]
-          description: >
-            Workload type. "container" auto-selects the lxc backend.
-        template:
-          type: string
-          description: LXC template name (e.g., ubuntu, alpine). Used when type=container.
+          format: date-time
 
     BackendInfo:
       type: object
@@ -975,18 +1891,14 @@ components:
       properties:
         pool:
           type: string
-          description: Target storage pool name
         name:
           type: string
-          description: Volume name
         size_bytes:
           type: integer
           format: int64
-          description: Volume size in bytes
         format:
           type: string
           enum: [qcow2, raw, zvol]
-          description: Disk image format
 
     # ── Network ────────────────────────────────────────
     NetworkZone:
@@ -1004,6 +1916,20 @@ components:
         status:
           type: string
           enum: [active, pending, error]
+
+    CreateZoneRequest:
+      type: object
+      required: [name, type]
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+          enum: [vxlan, vlan, simple, evpn]
+        bridge:
+          type: string
+        mtu:
+          type: integer
 
     VNet:
       type: object
@@ -1064,7 +1990,7 @@ components:
         attached_vm:
           type: integer
           format: int32
-          description: VM handle the device is attached to (0 = not attached)
+          description: VM handle (0 = not attached)
         iommu_group:
           type: string
         driver:
@@ -1077,7 +2003,6 @@ components:
         vm_handle:
           type: integer
           format: int32
-          description: VM handle to attach the device to
 
     # ── Cluster / HA ───────────────────────────────────
     ClusterStatus:
@@ -1119,11 +2044,9 @@ components:
       properties:
         reason:
           type: string
-          description: Reason for fencing
         action:
           type: string
           enum: [reboot, off, on]
-          description: Fencing action to perform
 
     FenceEvent:
       type: object
@@ -1141,6 +2064,25 @@ components:
         timestamp:
           type: string
           format: date-time
+
+    NodeInfo:
+      type: object
+      properties:
+        name:
+          type: string
+        status:
+          type: string
+        cpu_percent:
+          type: number
+          format: double
+        memory_percent:
+          type: number
+          format: double
+        vm_count:
+          type: integer
+        uptime_seconds:
+          type: integer
+          format: int64
 
     # ── Backups ────────────────────────────────────────
     BackupInfo:
@@ -1175,27 +2117,222 @@ components:
         vm_id:
           type: integer
           format: int32
-          description: VM handle to back up
         vm_name:
           type: string
-          description: VM name (for labelling)
         pool:
           type: string
-          description: Storage pool for the backup volume
 
-    # ── Nodes ──────────────────────────────────────────
-    NodeInfo:
+    # ── Snapshots ──────────────────────────────────────
+    SnapshotInfo:
       type: object
+      properties:
+        id:
+          type: string
+        vm_id:
+          type: integer
+          format: int32
+        vm_name:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        size_bytes:
+          type: integer
+          format: int64
+
+    CreateSnapshotRequest:
+      type: object
+      required: [vm_id, vm_name]
+      properties:
+        vm_id:
+          type: integer
+          format: int32
+        vm_name:
+          type: string
+
+    # ── Templates ──────────────────────────────────────
+    TemplateInfo:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        vcpus:
+          type: integer
+          format: int32
+        memory_mb:
+          type: integer
+          format: int64
+        backend:
+          type: string
+          enum: [rustvmm, qemu, lxc]
+        description:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    CreateTemplateRequest:
+      type: object
+      required: [name, vcpus, memory_mb]
       properties:
         name:
           type: string
+        vcpus:
+          type: integer
+          format: int32
+        memory_mb:
+          type: integer
+          format: int64
+        backend:
+          type: string
+          enum: [rustvmm, qemu, lxc]
+        description:
+          type: string
+
+    # ── Images ─────────────────────────────────────────
+    ImageInfo:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        format:
+          type: string
+          enum: [qcow2, raw, iso]
+        path:
+          type: string
+        os_type:
+          type: string
+        size_bytes:
+          type: integer
+          format: int64
+        created_at:
+          type: string
+          format: date-time
+
+    CreateImageRequest:
+      type: object
+      required: [name, format, path, os_type]
+      properties:
+        name:
+          type: string
+        format:
+          type: string
+          enum: [qcow2, raw, iso]
+        path:
+          type: string
+        os_type:
+          type: string
+
+    # ── Tasks ──────────────────────────────────────────
+    TaskInfo:
+      type: object
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          description: Task type (e.g., migration, backup)
         status:
           type: string
-        cpu_percent:
-          type: number
-          format: double
-        memory_percent:
-          type: number
-          format: double
-        vm_count:
+          enum: [pending, running, completed, failed]
+        progress:
           type: integer
+          description: 0-100 percentage
+        result:
+          type: string
+        error:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+
+    # ── Auth ───────────────────────────────────────────
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+          format: password
+
+    LoginResponse:
+      type: object
+      properties:
+        token:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+
+    UserInfo:
+      type: object
+      properties:
+        username:
+          type: string
+        role:
+          type: string
+          enum: [admin, operator, viewer]
+        created_at:
+          type: string
+          format: date-time
+
+    CreateUserRequest:
+      type: object
+      required: [username, password, role]
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+          format: password
+        role:
+          type: string
+          enum: [admin, operator, viewer]
+
+    # ── Monitoring ─────────────────────────────────────
+    SystemStats:
+      type: object
+      properties:
+        total_vms:
+          type: integer
+        running_vms:
+          type: integer
+        total_containers:
+          type: integer
+        storage_pools:
+          type: integer
+        storage_used_bytes:
+          type: integer
+          format: int64
+        network_zones:
+          type: integer
+        cluster_nodes:
+          type: integer
+        uptime_seconds:
+          type: integer
+          format: int64
+
+    APIInfo:
+      type: object
+      properties:
+        current_version:
+          type: string
+          example: v1
+        supported:
+          type: array
+          items:
+            type: string
+          example: ["v1"]
+        deprecated:
+          type: array
+          items:
+            type: string

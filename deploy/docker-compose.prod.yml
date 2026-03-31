@@ -57,8 +57,8 @@ services:
   controller:
     restart: always
     environment:
-      - HCV_API_ADDR=:8080
-      - HCV_GRPC_ADDR=:9090
+      - HCV_API_ADDR=:18080
+      - HCV_GRPC_ADDR=:19090
       - HCV_ETCD_ENDPOINTS=http://etcd:2379
       - HCV_LOG_LEVEL=info
       - HCV_LOG_FORMAT=json
@@ -76,7 +76,7 @@ services:
         reservations:
           memory: 256m
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/healthz"]
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:18080/healthz"]
       interval: 10s
       timeout: 5s
       retries: 5

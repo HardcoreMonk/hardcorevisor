@@ -54,7 +54,7 @@ func NewServer(svc *Services) *grpc.Server {
 
 // ListenAndServe 는 지정된 주소에서 gRPC 서버를 시작한다.
 //
-// 기본 주소: ":9090" (환경변수 HCV_GRPC_ADDR로 변경 가능)
+// 기본 주소: ":19090" (환경변수 HCV_GRPC_ADDR로 변경 가능)
 // 블로킹 호출 — 별도 고루틴에서 실행해야 한다.
 func ListenAndServe(srv *grpc.Server, addr string) error {
 	lis, err := net.Listen("tcp", addr)

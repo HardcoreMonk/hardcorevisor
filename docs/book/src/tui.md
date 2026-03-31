@@ -15,7 +15,7 @@ just tui
 cargo run -p hcvtui
 
 # Controller 주소 지정
-HCV_API_ADDR=192.168.1.100:8080 cargo run -p hcvtui
+HCV_API_ADDR=192.168.1.100:18080 cargo run -p hcvtui
 
 # 파일 변경 감지 자동 재시작
 just rust-watch-tui
@@ -117,4 +117,4 @@ VM 목록에서 `Enter`를 누르면 팝업으로 상세 정보를 표시한다:
 
 | 환경변수 | 기본값 | 설명 |
 |----------|--------|------|
-| `HCV_API_ADDR` | `localhost:8080` | Controller REST API 주소 |
+| `HCV_API_ADDR` | `localhost:18080` | Controller REST API 주소 |

@@ -1,6 +1,6 @@
 # REST API
 
-기본 주소: `http://localhost:8080`
+기본 주소: `http://localhost:18080`
 
 ## OpenAPI 스펙
 
@@ -96,45 +96,45 @@
 
 ```bash
 # VM 생성
-curl -s -X POST localhost:8080/api/v1/vms \
+curl -s -X POST localhost:18080/api/v1/vms \
   -H 'Content-Type: application/json' \
   -d '{"name":"test-vm","vcpus":2,"memory_mb":4096}' | jq
 
 # QEMU 백엔드로 VM 생성 (Windows, GPU 패스스루 용도)
-curl -s -X POST localhost:8080/api/v1/vms \
+curl -s -X POST localhost:18080/api/v1/vms \
   -H 'Content-Type: application/json' \
   -d '{"name":"win-server","vcpus":8,"memory_mb":32768,"backend":"qemu"}' | jq
 
 # VM 목록
-curl -s localhost:8080/api/v1/vms | jq
+curl -s localhost:18080/api/v1/vms | jq
 
 # VM 상세
-curl -s localhost:8080/api/v1/vms/1 | jq
+curl -s localhost:18080/api/v1/vms/1 | jq
 
 # VM 시작
-curl -s -X POST localhost:8080/api/v1/vms/1/start | jq
+curl -s -X POST localhost:18080/api/v1/vms/1/start | jq
 
 # VM 일시정지
-curl -s -X POST localhost:8080/api/v1/vms/1/pause | jq
+curl -s -X POST localhost:18080/api/v1/vms/1/pause | jq
 
 # VM 재개
-curl -s -X POST localhost:8080/api/v1/vms/1/resume | jq
+curl -s -X POST localhost:18080/api/v1/vms/1/resume | jq
 
 # VM 중지
-curl -s -X POST localhost:8080/api/v1/vms/1/stop | jq
+curl -s -X POST localhost:18080/api/v1/vms/1/stop | jq
 
 # VM 삭제
-curl -s -X DELETE localhost:8080/api/v1/vms/1 -w '%{http_code}\n'
+curl -s -X DELETE localhost:18080/api/v1/vms/1 -w '%{http_code}\n'
 ```
 
 ### 스토리지
 
 ```bash
 # 풀 목록
-curl -s localhost:8080/api/v1/storage/pools | jq
+curl -s localhost:18080/api/v1/storage/pools | jq
 
 # 볼륨 생성
-curl -s -X POST localhost:8080/api/v1/storage/volumes \
+curl -s -X POST localhost:18080/api/v1/storage/volumes \
   -H 'Content-Type: application/json' \
   -d '{"pool":"local-zfs","name":"disk-01","size_bytes":10737418240,"format":"qcow2"}' | jq
 ```
@@ -143,10 +143,10 @@ curl -s -X POST localhost:8080/api/v1/storage/volumes \
 
 ```bash
 # GPU 디바이스 목록
-curl -s 'localhost:8080/api/v1/devices?type=gpu' | jq
+curl -s 'localhost:18080/api/v1/devices?type=gpu' | jq
 
 # 디바이스 연결
-curl -s -X POST localhost:8080/api/v1/devices/gpu-0/attach \
+curl -s -X POST localhost:18080/api/v1/devices/gpu-0/attach \
   -H 'Content-Type: application/json' \
   -d '{"vm_handle":1}' | jq
 ```
@@ -155,10 +155,10 @@ curl -s -X POST localhost:8080/api/v1/devices/gpu-0/attach \
 
 ```bash
 # 클러스터 상태
-curl -s localhost:8080/api/v1/cluster/status | jq
+curl -s localhost:18080/api/v1/cluster/status | jq
 
 # 펜싱
-curl -s -X POST localhost:8080/api/v1/cluster/fence/node-03 \
+curl -s -X POST localhost:18080/api/v1/cluster/fence/node-03 \
   -H 'Content-Type: application/json' \
   -d '{"reason":"unresponsive","action":"reboot"}' | jq
 ```
@@ -169,11 +169,11 @@ RBAC가 활성화된 경우 Basic Auth를 사용한다:
 
 ```bash
 # Basic Auth
-curl -s -u admin:secret123 localhost:8080/api/v1/vms | jq
+curl -s -u admin:secret123 localhost:18080/api/v1/vms | jq
 
 # 인증 없이 접근 가능한 엔드포인트
-curl -s localhost:8080/healthz | jq
-curl -s localhost:8080/metrics
+curl -s localhost:18080/healthz | jq
+curl -s localhost:18080/metrics
 ```
 
 ## HTTP 상태 코드

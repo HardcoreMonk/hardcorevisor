@@ -29,7 +29,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/HardcoreMonk/hardcorevisor/controller/internal/store"
@@ -83,7 +83,7 @@ func (p *PersistentSnapshotService) Create(vmID int32, vmName string) (*VMSnapsh
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if putErr := p.store.Put(ctx, snapshotStoreKey(snap.ID), snap); putErr != nil {
-		log.Printf("persistent snapshot: failed to store snapshot %s: %v", snap.ID, putErr)
+		slog.Error("persistent snapshot: failed to store snapshot", "snapshot_id", snap.ID, "error", putErr)
 	}
 	return snap, nil
 }
@@ -113,7 +113,7 @@ func (p *PersistentSnapshotService) Delete(id string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if delErr := p.store.Delete(ctx, snapshotStoreKey(id)); delErr != nil {
-		log.Printf("persistent snapshot: failed to delete snapshot %s from store: %v", id, delErr)
+		slog.Error("persistent snapshot: failed to delete snapshot from store", "snapshot_id", id, "error", delErr)
 	}
 	return nil
 }
@@ -130,7 +130,7 @@ func (p *PersistentSnapshotService) Restore(id string) (*VMSnapshot, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if putErr := p.store.Put(ctx, snapshotStoreKey(snap.ID), snap); putErr != nil {
-		log.Printf("persistent snapshot: failed to update snapshot %s in store: %v", snap.ID, putErr)
+		slog.Error("persistent snapshot: failed to update snapshot in store", "snapshot_id", snap.ID, "error", putErr)
 	}
 	return snap, nil
 }
@@ -154,7 +154,7 @@ func (p *PersistentSnapshotService) LoadFromStore() error {
 	}
 
 	if len(kvs) == 0 {
-		log.Println("persistent snapshot: no snapshots found in store")
+		slog.Info("persistent snapshot: no snapshots found in store")
 		return nil
 	}
 
@@ -162,7 +162,7 @@ func (p *PersistentSnapshotService) LoadFromStore() error {
 	for _, kv := range kvs {
 		var snap VMSnapshot
 		if err := json.Unmarshal(kv.Value, &snap); err != nil {
-			log.Printf("persistent snapshot: failed to unmarshal snapshot from key %s: %v", kv.Key, err)
+			slog.Warn("persistent snapshot: failed to unmarshal snapshot", "key", kv.Key, "error", err)
 			continue
 		}
 		p.inner.mu.Lock()
@@ -171,7 +171,7 @@ func (p *PersistentSnapshotService) LoadFromStore() error {
 		loaded++
 	}
 
-	log.Printf("persistent snapshot: loaded %d/%d snapshots from store", loaded, len(kvs))
+	slog.Info("persistent snapshot: loaded snapshots from store", "loaded", loaded, "total", len(kvs))
 	return nil
 }
 

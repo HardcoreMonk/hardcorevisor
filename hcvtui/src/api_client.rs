@@ -10,7 +10,7 @@
 //!     └── ApiClient (이 모듈)
 //!             │ HTTP GET/POST/DELETE
 //!             ▼
-//!         Go Controller (:8080)
+//!         Go Controller (:18080)
 //!             └── /api/v1/vms, /api/v1/nodes, ...
 //! ```
 //!
@@ -24,7 +24,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Go Controller REST API 기본 주소
-const DEFAULT_BASE_URL: &str = "http://localhost:8080/api/v1";
+const DEFAULT_BASE_URL: &str = "http://localhost:18080/api/v1";
 
 /// 스토리지 풀 정보
 ///
@@ -144,7 +144,7 @@ pub struct ClusterNodeInfo {
 /// reqwest 기반 HTTP 클라이언트로, 3초 타임아웃이 설정되어 있다.
 /// Controller가 응답하지 않으면 타임아웃 에러가 `ApiError::Network`로 반환된다.
 pub struct ApiClient {
-    /// API 기본 URL (예: "http://localhost:8080/api/v1")
+    /// API 기본 URL (예: "http://localhost:18080/api/v1")
     base_url: String,
     /// reqwest HTTP 클라이언트 (커넥션 풀 자동 관리)
     client: reqwest::Client,
@@ -247,7 +247,7 @@ impl ApiClient {
     /// 새 API 클라이언트를 생성한다.
     ///
     /// # 매개변수
-    /// - `base_url`: API 기본 URL. `None`이면 기본값 `http://localhost:8080/api/v1` 사용
+    /// - `base_url`: API 기본 URL. `None`이면 기본값 `http://localhost:18080/api/v1` 사용
     ///
     /// # 반환값
     /// - 3초 타임아웃이 설정된 `ApiClient` 인스턴스

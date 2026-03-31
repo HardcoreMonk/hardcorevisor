@@ -15,7 +15,7 @@ func TestOAuth2_GetAuthorizationURL(t *testing.T) {
 	// 시뮬레이션 모드 (ProviderURL 미설정)
 	provider, err := NewOAuth2Provider(OAuth2Config{
 		ClientID:    "test-client",
-		RedirectURL: "http://localhost:8080/api/v1/auth/oauth2/callback",
+		RedirectURL: "http://localhost:18080/api/v1/auth/oauth2/callback",
 	})
 	if err != nil {
 		t.Fatalf("NewOAuth2Provider: %v", err)
@@ -37,7 +37,7 @@ func TestOAuth2_GetAuthorizationURL(t *testing.T) {
 	provider2, err := NewOAuth2Provider(OAuth2Config{
 		ProviderURL: "https://keycloak.example.com/realms/hcv",
 		ClientID:    "hcv-app",
-		RedirectURL: "http://localhost:8080/api/v1/auth/oauth2/callback",
+		RedirectURL: "http://localhost:18080/api/v1/auth/oauth2/callback",
 		Scopes:      []string{"openid", "profile"},
 	})
 	if err != nil {
@@ -69,7 +69,7 @@ func TestOAuth2_GetAuthorizationURL(t *testing.T) {
 func TestOAuth2_ExchangeCode(t *testing.T) {
 	provider, err := NewOAuth2Provider(OAuth2Config{
 		ClientID:    "test-client",
-		RedirectURL: "http://localhost:8080/callback",
+		RedirectURL: "http://localhost:18080/callback",
 	})
 	if err != nil {
 		t.Fatalf("NewOAuth2Provider: %v", err)
@@ -119,7 +119,7 @@ func TestOAuth2_ExchangeCode(t *testing.T) {
 func TestOAuth2_ValidateIDToken(t *testing.T) {
 	provider, err := NewOAuth2Provider(OAuth2Config{
 		ClientID:    "test-client",
-		RedirectURL: "http://localhost:8080/callback",
+		RedirectURL: "http://localhost:18080/callback",
 	})
 	if err != nil {
 		t.Fatalf("NewOAuth2Provider: %v", err)
@@ -151,7 +151,7 @@ func TestOAuth2_ValidateIDToken(t *testing.T) {
 func TestOAuth2_ConfigValidation(t *testing.T) {
 	// ClientID 누락
 	_, err := NewOAuth2Provider(OAuth2Config{
-		RedirectURL: "http://localhost:8080/callback",
+		RedirectURL: "http://localhost:18080/callback",
 	})
 	if err == nil {
 		t.Error("expected error for missing client_id")
@@ -168,7 +168,7 @@ func TestOAuth2_ConfigValidation(t *testing.T) {
 	// 유효하지 않은 ProviderURL
 	_, err = NewOAuth2Provider(OAuth2Config{
 		ClientID:    "test",
-		RedirectURL: "http://localhost:8080/callback",
+		RedirectURL: "http://localhost:18080/callback",
 		ProviderURL: "not a url",
 	})
 	if err == nil {
@@ -178,7 +178,7 @@ func TestOAuth2_ConfigValidation(t *testing.T) {
 	// 기본 Scopes 자동 적용
 	p, err := NewOAuth2Provider(OAuth2Config{
 		ClientID:    "test",
-		RedirectURL: "http://localhost:8080/callback",
+		RedirectURL: "http://localhost:18080/callback",
 	})
 	if err != nil {
 		t.Fatalf("NewOAuth2Provider: %v", err)

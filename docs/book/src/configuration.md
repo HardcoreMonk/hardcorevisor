@@ -9,11 +9,11 @@ Controller는 작업 디렉터리의 `hcv.yaml` 파일에서 설정을 로드한
 
 # REST API 서버
 api:
-  addr: ":8080"          # HCV_API_ADDR
+  addr: ":18080"          # HCV_API_ADDR
 
 # gRPC 서버
 grpc:
-  addr: ":9090"          # HCV_GRPC_ADDR
+  addr: ":19090"          # HCV_GRPC_ADDR
 
 # etcd 상태 저장소 (비워두면 인메모리 폴백)
 etcd:
@@ -50,8 +50,8 @@ peripheral:
 
 | 환경변수 | 기본값 | 설명 |
 |----------|--------|------|
-| `HCV_API_ADDR` | `:8080` | REST API 서버 바인드 주소 |
-| `HCV_GRPC_ADDR` | `:9090` | gRPC 서버 바인드 주소 |
+| `HCV_API_ADDR` | `:18080` | REST API 서버 바인드 주소 |
+| `HCV_GRPC_ADDR` | `:19090` | gRPC 서버 바인드 주소 |
 | `HCV_ETCD_ENDPOINTS` | (없음) | etcd 엔드포인트 (쉼표 구분). 미설정 시 인메모리 폴백 |
 | `HCV_TLS_CERT` | (없음) | TLS 인증서 파일 경로 |
 | `HCV_TLS_KEY` | (없음) | TLS 키 파일 경로 |
@@ -62,7 +62,8 @@ peripheral:
 | `HCV_PERIPHERAL_DRIVER` | `memory` | 디바이스 드라이버 (`memory`, `sysfs`) |
 | `HCV_HA_DRIVER` | `memory` | HA 드라이버 (`memory`, `etcd`) |
 | `HCV_NODE_NAME` | (호스트명) | 클러스터 내 노드 이름 |
-| `HCV_RATE_LIMIT` | (없음) | API 요청 레이트 리밋 (향후 지원, 예: `100/s`) |
+| `HCV_RATE_LIMIT` | (없음) | API 요청 레이트 리밋 — 초당 요청 수 (예: `100`) |
+| `HCV_OTEL_ENDPOINT` | (없음) | OpenTelemetry OTLP HTTP 엔드포인트 (예: `http://localhost:4318`) |
 
 ## 로그 레벨 / 포맷
 

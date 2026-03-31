@@ -16,7 +16,7 @@
 //
 // # 글로벌 플래그
 //
-//   - --api: Controller API 주소 (기본: http://localhost:8080)
+//   - --api: Controller API 주소 (기본: http://localhost:18080)
 //   - --output/-o: 출력 형식 (table/json/yaml, 기본: table)
 //   - --tls-skip-verify: TLS 인증서 검증 건너뛰기
 //   - --user/--password: Basic Auth 인증 정보
@@ -50,7 +50,7 @@ var (
 	version       = "dev"
 	commit        = "none"
 	buildDate     = "unknown"
-	apiAddr       = "http://localhost:8080"
+	apiAddr       = "http://localhost:18080"
 	outputFormat  = "table"
 	tlsSkip       bool
 	authUser      string

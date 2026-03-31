@@ -71,7 +71,7 @@ log "Waiting for services to be ready..."
 MAX_WAIT=60
 WAITED=0
 while [ $WAITED -lt $MAX_WAIT ]; do
-    if curl -sf http://localhost:8080/healthz > /dev/null 2>&1; then
+    if curl -sf http://localhost:18080/healthz > /dev/null 2>&1; then
         log "Controller ready after ${WAITED}s"
         break
     fi
@@ -93,7 +93,7 @@ fi
 log "Phase 1: Service Health Checks"
 
 run_test "Controller healthz" \
-    curl -sf http://localhost:8080/healthz
+    curl -sf http://localhost:18080/healthz
 
 run_test "etcd health" \
     curl -sf http://localhost:2379/health
@@ -111,77 +111,77 @@ echo ""
 log "Phase 2: REST API Smoke Tests"
 
 run_test "GET /api/v1/version" \
-    curl -sf http://localhost:8080/api/v1/version
+    curl -sf http://localhost:18080/api/v1/version
 
 run_test "GET /api/v1/backends" \
-    curl -sf http://localhost:8080/api/v1/backends
+    curl -sf http://localhost:18080/api/v1/backends
 
 # VM lifecycle
 run_test "POST /api/v1/vms (create)" \
-    curl -sf -X POST http://localhost:8080/api/v1/vms \
+    curl -sf -X POST http://localhost:18080/api/v1/vms \
         -H 'Content-Type: application/json' \
         -d '{"name":"smoke-test-vm","vcpus":2,"memory_mb":4096}'
 
 run_test "GET /api/v1/vms (list)" \
-    curl -sf http://localhost:8080/api/v1/vms
+    curl -sf http://localhost:18080/api/v1/vms
 
 run_test "POST /api/v1/vms/1/start" \
-    curl -sf -X POST http://localhost:8080/api/v1/vms/1/start
+    curl -sf -X POST http://localhost:18080/api/v1/vms/1/start
 
 run_test "POST /api/v1/vms/1/stop" \
-    curl -sf -X POST http://localhost:8080/api/v1/vms/1/stop
+    curl -sf -X POST http://localhost:18080/api/v1/vms/1/stop
 
 # QEMU backend
 run_test "POST /api/v1/vms (qemu backend)" \
-    curl -sf -X POST http://localhost:8080/api/v1/vms \
+    curl -sf -X POST http://localhost:18080/api/v1/vms \
         -H 'Content-Type: application/json' \
         -d '{"name":"qemu-smoke","vcpus":4,"memory_mb":8192,"backend":"qemu"}'
 
 # Services
 run_test "GET /api/v1/storage/pools" \
-    curl -sf http://localhost:8080/api/v1/storage/pools
+    curl -sf http://localhost:18080/api/v1/storage/pools
 
 run_test "GET /api/v1/network/zones" \
-    curl -sf http://localhost:8080/api/v1/network/zones
+    curl -sf http://localhost:18080/api/v1/network/zones
 
 run_test "GET /api/v1/devices" \
-    curl -sf http://localhost:8080/api/v1/devices
+    curl -sf http://localhost:18080/api/v1/devices
 
 run_test "GET /api/v1/cluster/status" \
-    curl -sf http://localhost:8080/api/v1/cluster/status
+    curl -sf http://localhost:18080/api/v1/cluster/status
 
 run_test "GET /api/v1/cluster/nodes" \
-    curl -sf http://localhost:8080/api/v1/cluster/nodes
+    curl -sf http://localhost:18080/api/v1/cluster/nodes
 
 run_test "GET /api/v1/nodes" \
-    curl -sf http://localhost:8080/api/v1/nodes
+    curl -sf http://localhost:18080/api/v1/nodes
 
 # Backup API
 run_test "POST /api/v1/backups (create)" \
-    curl -sf -X POST http://localhost:8080/api/v1/backups \
+    curl -sf -X POST http://localhost:18080/api/v1/backups \
         -H 'Content-Type: application/json' \
         -d '{"vm_id":1,"vm_name":"smoke-test-vm","pool":"local-zfs"}'
 
 run_test "GET /api/v1/backups (list)" \
-    curl -sf http://localhost:8080/api/v1/backups
+    curl -sf http://localhost:18080/api/v1/backups
 
 # System
 run_test "GET /api/v1/system/stats" \
-    curl -sf http://localhost:8080/api/v1/system/stats
+    curl -sf http://localhost:18080/api/v1/system/stats
 
 run_test "GET /api/v1/api-info" \
-    curl -sf http://localhost:8080/api/v1/api-info
+    curl -sf http://localhost:18080/api/v1/api-info
 
 # Network details
 run_test "GET /api/v1/network/vnets" \
-    curl -sf http://localhost:8080/api/v1/network/vnets
+    curl -sf http://localhost:18080/api/v1/network/vnets
 
 run_test "GET /api/v1/network/firewall" \
-    curl -sf http://localhost:8080/api/v1/network/firewall
+    curl -sf http://localhost:18080/api/v1/network/firewall
 
 # VM Migration
 run_test "POST /api/v1/vms/1/migrate" \
-    curl -sf -X POST http://localhost:8080/api/v1/vms/1/migrate \
+    curl -sf -X POST http://localhost:18080/api/v1/vms/1/migrate \
         -H 'Content-Type: application/json' \
         -d '{"target_node":"node-02"}'
 

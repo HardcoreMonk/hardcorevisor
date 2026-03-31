@@ -99,7 +99,7 @@ just dev-up
 #   etcd:       localhost:2379
 #   Prometheus: localhost:9090
 #   Grafana:    localhost:3000
-#   Controller: localhost:8080
+#   Controller: localhost:18080
 
 # 서비스 중지
 just dev-down

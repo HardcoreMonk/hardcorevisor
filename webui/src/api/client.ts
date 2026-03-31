@@ -25,8 +25,7 @@ apiClient.interceptors.response.use(
   (error) => {
     if (error.response?.status === 401) {
       localStorage.removeItem('hcv_token')
-      // 로그인 페이지가 구현되면 리다이렉트 활성화
-      // window.location.href = '/login'
+      window.location.href = '/login'
     }
     return Promise.reject(error)
   },

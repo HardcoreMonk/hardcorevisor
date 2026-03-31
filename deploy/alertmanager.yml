@@ -15,12 +15,12 @@ route:
 receivers:
   - name: 'default'
     webhook_configs:
-      - url: 'http://controller:8080/api/v1/webhooks/alert'
+      - url: 'http://controller:18080/api/v1/webhooks/alert'
         send_resolved: true
 
   - name: 'critical'
     webhook_configs:
-      - url: 'http://controller:8080/api/v1/webhooks/alert'
+      - url: 'http://controller:18080/api/v1/webhooks/alert'
         send_resolved: true
     # Uncomment and configure for Slack:
     # slack_configs:

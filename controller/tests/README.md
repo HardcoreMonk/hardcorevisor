@@ -73,7 +73,7 @@ just stack-logs   # Follow logs
 ```
 
 Services:
-- **Controller**: http://localhost:8080 (REST API)
+- **Controller**: http://localhost:18080 (REST API)
 - **Prometheus**: http://localhost:9090
 - **Grafana**: http://localhost:3000 (admin/admin)
 - **etcd**: http://localhost:2379

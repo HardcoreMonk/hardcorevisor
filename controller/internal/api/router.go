@@ -21,10 +21,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"log/slog"
 	"net/http"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -127,6 +127,8 @@ func NewRouter(svc *Services, rbacUsers ...map[string]auth.RBACUser) http.Handle
 	if svc != nil {
 		// Live handlers backed by compute service
 		mux.HandleFunc("GET /healthz", handleHealth)
+		mux.HandleFunc("GET /readyz", svc.handleReadiness)
+		mux.HandleFunc("GET /startupz", handleHealth)
 		mux.HandleFunc("GET /api/v1/version", svc.handleVersion)
 		mux.HandleFunc("GET /api/v1/vms", svc.handleListVMs)
 		mux.HandleFunc("POST /api/v1/vms", svc.handleCreateVM)
@@ -363,7 +365,7 @@ func loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		next.ServeHTTP(w, r)
-		log.Printf("%s %s %s %v", r.RemoteAddr, r.Method, r.URL.Path, time.Since(start))
+		slog.Info("http request", "addr", r.RemoteAddr, "method", r.Method, "path", r.URL.Path, "duration", time.Since(start))
 	})
 }
 
@@ -388,7 +390,9 @@ func recoveryMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if err := recover(); err != nil {
-				log.Printf("PANIC recovered: %v", err)
+				stack := make([]byte, 4096)
+				n := runtime.Stack(stack, false)
+				slog.Error("panic recovered", "panic", err, "stack", string(stack[:n]))
 				http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
 			}
 		}()
@@ -398,10 +402,49 @@ func recoveryMiddleware(next http.Handler) http.Handler {
 
 // ── 라이브 핸들러 (Compute 서비스 기반) ────────────
 
-// handleHealth — 헬스 체크 엔드포인트 (GET /healthz).
-// 항상 {"status":"ok"}을 반환한다. 로드밸런서/모니터링에서 사용한다.
+// handleHealth — 라이브니스 프로브 (GET /healthz).
+// 프로세스가 살아 있으면 200을 반환한다. 의존성 상태는 확인하지 않는다.
 func handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// handleReadiness — 레디니스 프로브 (GET /readyz).
+// 서비스가 트래픽을 받을 준비가 되었는지 확인한다.
+// Compute, Storage, HA 서비스의 기본 동작 여부를 검증한다.
+func (svc *Services) handleReadiness(w http.ResponseWriter, _ *http.Request) {
+	checks := map[string]string{}
+	allOk := true
+
+	// Compute 서비스 확인
+	if svc.Compute != nil {
+		checks["compute"] = "ok"
+	} else {
+		checks["compute"] = "unavailable"
+		allOk = false
+	}
+
+	// Storage 서비스 확인
+	if svc.Storage != nil {
+		checks["storage"] = "ok"
+	} else {
+		checks["storage"] = "unavailable"
+		allOk = false
+	}
+
+	// HA 서비스 확인
+	if svc.HA != nil {
+		checks["ha"] = "ok"
+	} else {
+		checks["ha"] = "unavailable"
+	}
+
+	if allOk {
+		checks["status"] = "ready"
+		writeJSON(w, http.StatusOK, checks)
+	} else {
+		checks["status"] = "not_ready"
+		writeJSON(w, http.StatusServiceUnavailable, checks)
+	}
 }
 
 // handleVersion — 버전 정보를 반환한다 (GET /api/v1/version).
@@ -477,6 +520,15 @@ func (svc *Services) handleCreateVM(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.MemoryMB == 0 {
 		req.MemoryMB = 512
+	}
+	// 리소스 상한 검증 — DoS 및 잘못된 설정 방지
+	if req.VCPUs > 256 {
+		writeError(w, http.StatusBadRequest, ErrCodeBadRequest, "vcpus must be <= 256")
+		return
+	}
+	if req.MemoryMB > 1048576 { // 1TB
+		writeError(w, http.StatusBadRequest, ErrCodeBadRequest, "memory_mb must be <= 1048576 (1TB)")
+		return
 	}
 
 	// If type is "container", auto-select lxc backend
@@ -592,22 +644,31 @@ func (svc *Services) handleMigrateVM(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		t := svc.Task.CreateTask("vm.migrate", handle)
-		// Track migration progress in a goroutine
+		// Track migration progress in a goroutine with timeout
 		go func() {
 			t.SetStatus("running")
+			deadline := time.After(30 * time.Minute) // 마이그레이션 최대 30분
+			ticker := time.NewTicker(10 * time.Millisecond)
+			defer ticker.Stop()
 			for {
-				time.Sleep(10 * time.Millisecond)
-				ms, err := svc.Compute.GetMigrationStatus(handle)
-				if err != nil {
-					break
-				}
-				t.SetProgress(ms.Progress)
-				if ms.Phase == "completed" {
-					t.Complete()
-					break
-				} else if ms.Phase == "failed" {
-					t.Fail(ms.Error)
-					break
+				select {
+				case <-deadline:
+					t.Fail("migration timeout (30 minutes)")
+					return
+				case <-ticker.C:
+					ms, err := svc.Compute.GetMigrationStatus(handle)
+					if err != nil {
+						t.Fail(err.Error())
+						return
+					}
+					t.SetProgress(ms.Progress)
+					if ms.Phase == "completed" {
+						t.Complete()
+						return
+					} else if ms.Phase == "failed" {
+						t.Fail(ms.Error)
+						return
+					}
 				}
 			}
 		}()

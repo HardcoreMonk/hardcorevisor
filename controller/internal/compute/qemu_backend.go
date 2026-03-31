@@ -38,6 +38,8 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/HardcoreMonk/hardcorevisor/controller/internal/resilience"
 )
 
 // qemuProcess — QEMU 프로세스와 QMP 소켓 경로를 추적한다 (Real 모드에서 사용).
@@ -58,6 +60,7 @@ type QEMUBackend struct {
 	emulated    bool   // true = in-memory emulation (no real QEMU)
 	defaultDisk string // default disk image path (optional)
 	networkMode string // "user", "tap", "none"
+	cb          *resilience.CircuitBreaker // QMP 장애 격리
 }
 
 // QEMUConfig — QEMU 백엔드 설정.
@@ -76,6 +79,7 @@ func NewQEMUBackend(config *QEMUConfig) *QEMUBackend {
 		vms:       make(map[int32]*VMInfo),
 		processes: make(map[int32]*qemuProcess),
 		emulated:  true,
+		cb:        resilience.NewCircuitBreaker("qemu-qmp", 3, 15*time.Second),
 	}
 	b.nextID.Store(10000) // QEMU handles start at 10000 to avoid collision with rustvmm
 
@@ -437,17 +441,19 @@ func (b *QEMUBackend) qmpCommand(handle int32, command string) error {
 		return fmt.Errorf("no QEMU process for handle %d: socket connection failed", handle)
 	}
 
-	client, err := QMPDial(proc.socketPath, 5*time.Second)
-	if err != nil {
-		return fmt.Errorf("QMP connect for handle %d: %w", handle, err)
-	}
-	defer client.Close()
+	// Circuit Breaker로 QMP 작업 보호 — 3회 연속 실패 시 15초 차단
+	return b.cb.Execute(func() error {
+		client, err := QMPDial(proc.socketPath, 5*time.Second)
+		if err != nil {
+			return fmt.Errorf("QMP connect for handle %d: %w", handle, err)
+		}
+		defer client.Close()
 
-	if err := client.Execute(command, nil); err != nil {
-		return fmt.Errorf("QMP command %q for handle %d: %w", command, handle, err)
-	}
-
-	return nil
+		if err := client.Execute(command, nil); err != nil {
+			return fmt.Errorf("QMP command %q for handle %d: %w", command, handle, err)
+		}
+		return nil
+	})
 }
 
 // monitorProcess 는 QEMU 프로세스를 주기적으로 감시하는 고루틴이다.

@@ -1,6 +1,6 @@
 # gRPC API
 
-기본 주소: `localhost:9090`
+기본 주소: `localhost:19090`
 
 ## gRPC 서비스
 
@@ -58,63 +58,63 @@ gRPC reflection이 활성화되어 있어 `grpcurl`로 서비스를 탐색할 �
 
 ```bash
 # 서비스 목록
-grpcurl -plaintext localhost:9090 list
+grpcurl -plaintext localhost:19090 list
 
 # 서비스별 RPC 목록
-grpcurl -plaintext localhost:9090 list hardcorevisor.compute.v1.ComputeService
-grpcurl -plaintext localhost:9090 list hardcorevisor.storage.v1.StorageAgent
-grpcurl -plaintext localhost:9090 list hardcorevisor.peripheral.v1.PeripheralManager
+grpcurl -plaintext localhost:19090 list hardcorevisor.compute.v1.ComputeService
+grpcurl -plaintext localhost:19090 list hardcorevisor.storage.v1.StorageAgent
+grpcurl -plaintext localhost:19090 list hardcorevisor.peripheral.v1.PeripheralManager
 
 # RPC 상세 (요청/응답 메시지 타입)
-grpcurl -plaintext localhost:9090 describe hardcorevisor.compute.v1.ComputeService.CreateVM
+grpcurl -plaintext localhost:19090 describe hardcorevisor.compute.v1.ComputeService.CreateVM
 ```
 
 ### Compute 예제
 
 ```bash
 # VM 목록
-grpcurl -plaintext localhost:9090 \
+grpcurl -plaintext localhost:19090 \
   hardcorevisor.compute.v1.ComputeService/ListVMs
 
 # VM 생성
 grpcurl -plaintext -d '{"name":"grpc-vm","vcpus":2,"memory_mb":4096}' \
-  localhost:9090 hardcorevisor.compute.v1.ComputeService/CreateVM
+  localhost:19090 hardcorevisor.compute.v1.ComputeService/CreateVM
 
 # VM 시작
 grpcurl -plaintext -d '{"handle":1}' \
-  localhost:9090 hardcorevisor.compute.v1.ComputeService/StartVM
+  localhost:19090 hardcorevisor.compute.v1.ComputeService/StartVM
 
 # VM 중지
 grpcurl -plaintext -d '{"handle":1}' \
-  localhost:9090 hardcorevisor.compute.v1.ComputeService/StopVM
+  localhost:19090 hardcorevisor.compute.v1.ComputeService/StopVM
 ```
 
 ### Storage 예제
 
 ```bash
 # 풀 목록
-grpcurl -plaintext localhost:9090 \
+grpcurl -plaintext localhost:19090 \
   hardcorevisor.storage.v1.StorageAgent/ListPools
 
 # 볼륨 목록
-grpcurl -plaintext localhost:9090 \
+grpcurl -plaintext localhost:19090 \
   hardcorevisor.storage.v1.StorageAgent/ListVolumes
 
 # 볼륨 생성
 grpcurl -plaintext -d '{"pool":"local-zfs","name":"disk-01","size_bytes":10737418240}' \
-  localhost:9090 hardcorevisor.storage.v1.StorageAgent/CreateVolume
+  localhost:19090 hardcorevisor.storage.v1.StorageAgent/CreateVolume
 ```
 
 ### Peripheral 예제
 
 ```bash
 # 디바이스 목록
-grpcurl -plaintext localhost:9090 \
+grpcurl -plaintext localhost:19090 \
   hardcorevisor.peripheral.v1.PeripheralManager/ListDevices
 
 # 디바이스 연결
 grpcurl -plaintext -d '{"device_id":"gpu-0","vm_handle":1}' \
-  localhost:9090 hardcorevisor.peripheral.v1.PeripheralManager/AttachDevice
+  localhost:19090 hardcorevisor.peripheral.v1.PeripheralManager/AttachDevice
 ```
 
 ## Proto 소스

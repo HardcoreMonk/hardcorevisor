@@ -64,15 +64,17 @@ pub fn render(frame: &mut Frame, app: &App) {
 
     // ── VM Table ──
     // Phase 16: TYPE 컬럼 추가 — "VM"(녹색) 또는 "CT"(시안)으로 워크로드 유형을 구분
-    let header_cells = ["ID", "NAME", "TYPE", "STATE", "vCPUs", "MEMORY", "NODE", "BACKEND"]
-        .iter()
-        .map(|h| {
-            Cell::from(*h).style(
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            )
-        });
+    let header_cells = [
+        "ID", "NAME", "TYPE", "STATE", "vCPUs", "MEMORY", "NODE", "BACKEND",
+    ]
+    .iter()
+    .map(|h| {
+        Cell::from(*h).style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )
+    });
     let header = Row::new(header_cells).height(1);
 
     let rows: Vec<Row> = app

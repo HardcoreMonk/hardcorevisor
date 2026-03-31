@@ -108,7 +108,7 @@ openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -node
 HCV_TLS_CERT=cert.pem HCV_TLS_KEY=key.pem just go-run
 
 # curl로 접속 (자체 서명 인증서이므로 -k 플래그 필요)
-curl -sk https://localhost:8080/healthz | jq
+curl -sk https://localhost:18080/healthz | jq
 
 # hcvctl로 접속
 hcvctl --tls-skip-verify vm list
@@ -120,7 +120,7 @@ RBAC 활성화 시 Basic Auth로 인증한다.
 
 ```bash
 # curl
-curl -s -u admin:secret123 localhost:8080/api/v1/vms | jq
+curl -s -u admin:secret123 localhost:18080/api/v1/vms | jq
 
 # hcvctl
 hcvctl --user admin --password secret123 vm list
@@ -147,15 +147,25 @@ hcvctl --user admin --password secret123 vm list
 
 ## 구조화 에러 응답 (APIError)
 
-모든 API 에러는 `APIError` 구조체로 통일된 JSON 응답을 반환한다:
+모든 API 에러는 RFC 7807 Problem Details (`application/problem+json`) 형식으로 반환된다:
 
 ```json
-{"error": "not_found", "message": "VM with id 99 not found", "request_id": "abc-123"}
+{
+  "type": "/errors/not-found",
+  "title": "Not Found",
+  "status": 404,
+  "detail": "VM with id 99 not found",
+  "code": "NOT_FOUND"
+}
 ```
 
-## Rate Limiting (향후)
+## Rate Limiting
 
-`HCV_RATE_LIMIT` 환경변수로 API 요청 레이트 리밋을 설정할 수 있다 (향후 지원). IP 기반 또는 사용자 기반 제한을 지원할 예정이다.
+`HCV_RATE_LIMIT` 환경변수로 API 요청 레이트 리밋을 설정한다 (예: `HCV_RATE_LIMIT=100`). 토큰 버킷 알고리즘 기반이며, `/healthz`와 `/metrics`는 제한에서 제외된다. 응답 헤더에 `X-RateLimit-Limit`과 `X-RateLimit-Remaining`이 포함된다. 초과 시 429 Too Many Requests를 반환한다.
+
+## 분산 트레이싱
+
+`HCV_OTEL_ENDPOINT` 환경변수로 OpenTelemetry OTLP HTTP 엔드포인트를 설정하면 분산 트레이싱이 활성화된다 (예: `HCV_OTEL_ENDPOINT=http://localhost:4318`). Jaeger, Tempo, OTEL Collector와 호환된다. 미설정 시 트레이싱은 비활성 상태로 성능에 영향 없음.
 
 ## VFIO 보안 고려사항
 

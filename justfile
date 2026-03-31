@@ -131,7 +131,7 @@ go-fmt:
 go-vuln:
     cd controller && govulncheck ./...
 
-# Run Controller (REST :8080 + gRPC :9090, full service mode)
+# Run Controller (REST :18080 + gRPC :19090, full service mode)
 go-run:
     cd controller && go run ./cmd/controller
 
@@ -161,6 +161,25 @@ lint: rust-clippy rust-fmt go-vet
 
 # Full pre-commit check (lint + test)
 check: lint test
+
+# Install git hooks (pre-commit + commit-msg, required for all developers)
+hooks:
+    git config core.hooksPath .githooks
+    @echo "Git hooks installed (.githooks/pre-commit + commit-msg)"
+
+# Proto generated code sync check
+proto-check:
+    chmod +x scripts/proto-check.sh
+    ./scripts/proto-check.sh
+
+# WebUI build + lint + test
+webui-test:
+    cd webui && npm run lint && npm run build && npm run test
+
+# OpenAPI undocumented endpoint scan
+openapi-check:
+    chmod +x scripts/openapi-gen.sh
+    ./scripts/openapi-gen.sh
 
 # Clean all build artifacts
 clean:

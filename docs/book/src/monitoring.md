@@ -18,10 +18,10 @@ Controller는 `/metrics` 엔드포인트에서 Prometheus 메트릭을 노출한
 
 ```bash
 # Prometheus 메트릭 확인
-curl -s localhost:8080/metrics
+curl -s localhost:18080/metrics
 
 # 특정 메트릭 필터링
-curl -s localhost:8080/metrics | grep hcv_vms_total
+curl -s localhost:18080/metrics | grep hcv_vms_total
 ```
 
 ## Grafana 대시보드
@@ -117,7 +117,7 @@ just dev-up
 #   etcd:       2379
 #   Prometheus: 9090
 #   Grafana:    3000
-#   Controller: 8080
+#   Controller: 18080
 
 # 스택 로그 확인
 just dev-logs

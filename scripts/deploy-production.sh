@@ -413,7 +413,7 @@ main() {
 
     echo ""
     info "Deployment finished successfully."
-    info "Verify with: ssh $TARGET_HOST 'curl -s http://localhost:8080/healthz | jq'"
+    info "Verify with: ssh $TARGET_HOST 'curl -s http://localhost:18080/healthz | jq'"
 }
 
 main

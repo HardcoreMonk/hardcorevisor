@@ -41,7 +41,7 @@ hardcorevisor/
 │       └── ui/                # 6개 화면 (dashboard, vm_manager, storage, network, log, ha)
 ├── controller/                # Go 오케스트레이션 레이어
 │   ├── cmd/
-│   │   ├── controller/main.go # REST(:8080) + gRPC(:9090) 동시 서빙, 풀 서비스 모드
+│   │   ├── controller/main.go # REST(:18080) + gRPC(:19090) 동시 서빙, 풀 서비스 모드
 │   │   └── hcvctl/main.go     # CLI (Cobra, --output json/yaml/table, --tls, --user)
 │   ├── internal/
 │   │   ├── api/
@@ -152,7 +152,7 @@ just go-test-e2e      # E2E 통합 테스트만 (35개)
 just go-test-api      # API 유닛 테스트만 (3개)
 just go-vet           # go vet ./...
 just go-lint          # golangci-lint run --fast
-just go-run           # 컨트롤러 실행 (REST :8080 + gRPC :9090, 풀 서비스 모드)
+just go-run           # 컨트롤러 실행 (REST :18080 + gRPC :19090, 풀 서비스 모드)
 just go-hcvctl        # 버전 정보 주입하여 CLI 바이너리 빌드
 
 # E2E 통합 테스트
@@ -255,69 +255,69 @@ just go-run
 
 **Compute (VM 관리):**
 ```bash
-curl -s localhost:8080/healthz | jq
-curl -s localhost:8080/api/v1/version | jq
-curl -s localhost:8080/api/v1/backends | jq
+curl -s localhost:18080/healthz | jq
+curl -s localhost:18080/api/v1/version | jq
+curl -s localhost:18080/api/v1/backends | jq
 
 # VM 생명주기: 생성 → 시작 → 일시정지 → 재개 → 중지 → 삭제
-curl -s -X POST localhost:8080/api/v1/vms \
+curl -s -X POST localhost:18080/api/v1/vms \
   -H 'Content-Type: application/json' \
   -d '{"name":"test-vm","vcpus":2,"memory_mb":4096}' | jq
-curl -s localhost:8080/api/v1/vms | jq
-curl -s localhost:8080/api/v1/vms/1 | jq
-curl -s -X POST localhost:8080/api/v1/vms/1/start | jq
-curl -s -X POST localhost:8080/api/v1/vms/1/pause | jq
-curl -s -X POST localhost:8080/api/v1/vms/1/resume | jq
-curl -s -X POST localhost:8080/api/v1/vms/1/stop | jq
-curl -s -X DELETE localhost:8080/api/v1/vms/1 -w '%{http_code}\n'
+curl -s localhost:18080/api/v1/vms | jq
+curl -s localhost:18080/api/v1/vms/1 | jq
+curl -s -X POST localhost:18080/api/v1/vms/1/start | jq
+curl -s -X POST localhost:18080/api/v1/vms/1/pause | jq
+curl -s -X POST localhost:18080/api/v1/vms/1/resume | jq
+curl -s -X POST localhost:18080/api/v1/vms/1/stop | jq
+curl -s -X DELETE localhost:18080/api/v1/vms/1 -w '%{http_code}\n'
 
 # QEMU 백엔드로 VM 생성 (Windows, GPU 패스스루 용도)
-curl -s -X POST localhost:8080/api/v1/vms \
+curl -s -X POST localhost:18080/api/v1/vms \
   -H 'Content-Type: application/json' \
   -d '{"name":"win-server","vcpus":8,"memory_mb":32768,"backend":"qemu"}' | jq
 
 # 잘못된 상태 전이 (409 확인)
-curl -s -X POST localhost:8080/api/v1/vms \
+curl -s -X POST localhost:18080/api/v1/vms \
   -H 'Content-Type: application/json' \
   -d '{"name":"err-test","vcpus":1,"memory_mb":256}' | jq
-curl -s -o /dev/null -w '%{http_code}\n' -X POST localhost:8080/api/v1/vms/2/pause
+curl -s -o /dev/null -w '%{http_code}\n' -X POST localhost:18080/api/v1/vms/2/pause
 ```
 
 **Storage (스토리지):**
 ```bash
-curl -s localhost:8080/api/v1/storage/pools | jq
-curl -s localhost:8080/api/v1/storage/volumes | jq
-curl -s -X POST localhost:8080/api/v1/storage/volumes \
+curl -s localhost:18080/api/v1/storage/pools | jq
+curl -s localhost:18080/api/v1/storage/volumes | jq
+curl -s -X POST localhost:18080/api/v1/storage/volumes \
   -H 'Content-Type: application/json' \
   -d '{"pool":"local-zfs","name":"disk-01","size_bytes":10737418240,"format":"qcow2"}' | jq
-curl -s localhost:8080/api/v1/storage/volumes?pool=local-zfs | jq
-curl -s -X DELETE localhost:8080/api/v1/storage/volumes/vol-1 -w '%{http_code}\n'
+curl -s localhost:18080/api/v1/storage/volumes?pool=local-zfs | jq
+curl -s -X DELETE localhost:18080/api/v1/storage/volumes/vol-1 -w '%{http_code}\n'
 ```
 
 **Network (SDN):**
 ```bash
-curl -s localhost:8080/api/v1/network/zones | jq
-curl -s localhost:8080/api/v1/network/vnets | jq
-curl -s localhost:8080/api/v1/network/vnets?zone=vxlan-zone | jq
-curl -s localhost:8080/api/v1/network/firewall | jq
+curl -s localhost:18080/api/v1/network/zones | jq
+curl -s localhost:18080/api/v1/network/vnets | jq
+curl -s localhost:18080/api/v1/network/vnets?zone=vxlan-zone | jq
+curl -s localhost:18080/api/v1/network/firewall | jq
 ```
 
 **Peripheral (디바이스 패스스루):**
 ```bash
-curl -s localhost:8080/api/v1/devices | jq
-curl -s 'localhost:8080/api/v1/devices?type=gpu' | jq
-curl -s -X POST localhost:8080/api/v1/devices/gpu-0/attach \
+curl -s localhost:18080/api/v1/devices | jq
+curl -s 'localhost:18080/api/v1/devices?type=gpu' | jq
+curl -s -X POST localhost:18080/api/v1/devices/gpu-0/attach \
   -H 'Content-Type: application/json' \
   -d '{"vm_handle":1}' | jq
-curl -s -X POST localhost:8080/api/v1/devices/gpu-0/detach | jq
+curl -s -X POST localhost:18080/api/v1/devices/gpu-0/detach | jq
 ```
 
 **HA / Cluster:**
 ```bash
-curl -s localhost:8080/api/v1/cluster/status | jq
-curl -s localhost:8080/api/v1/cluster/nodes | jq
-curl -s localhost:8080/api/v1/nodes | jq
-curl -s -X POST localhost:8080/api/v1/cluster/fence/node-03 \
+curl -s localhost:18080/api/v1/cluster/status | jq
+curl -s localhost:18080/api/v1/cluster/nodes | jq
+curl -s localhost:18080/api/v1/nodes | jq
+curl -s -X POST localhost:18080/api/v1/cluster/fence/node-03 \
   -H 'Content-Type: application/json' \
   -d '{"reason":"unresponsive","action":"reboot"}' | jq
 ```
@@ -325,13 +325,13 @@ curl -s -X POST localhost:8080/api/v1/cluster/fence/node-03 \
 ### TUI 라이브 테스트
 
 ```bash
-# 터미널 1: Controller (REST :8080 + gRPC :9090)
+# 터미널 1: Controller (REST :18080 + gRPC :19090)
 just go-run
 
 # 터미널 2: TUI
 just tui
 # 또는 Controller 주소 지정:
-HCV_API_ADDR=192.168.1.100:8080 cargo run -p hcvtui
+HCV_API_ADDR=192.168.1.100:18080 cargo run -p hcvtui
 ```
 
 ### gRPC 수동 테스트 (grpcurl)
@@ -340,18 +340,18 @@ Controller 실행 후:
 
 ```bash
 # 서비스 목록 (reflection 활성)
-grpcurl -plaintext localhost:9090 list
+grpcurl -plaintext localhost:19090 list
 
 # Compute
-grpcurl -plaintext localhost:9090 hardcorevisor.compute.v1.ComputeService/ListVMs
+grpcurl -plaintext localhost:19090 hardcorevisor.compute.v1.ComputeService/ListVMs
 grpcurl -plaintext -d '{"name":"grpc-vm","vcpus":2,"memory_mb":4096}' \
-  localhost:9090 hardcorevisor.compute.v1.ComputeService/CreateVM
+  localhost:19090 hardcorevisor.compute.v1.ComputeService/CreateVM
 
 # Storage
-grpcurl -plaintext localhost:9090 hardcorevisor.storage.v1.StorageAgent/ListPools
+grpcurl -plaintext localhost:19090 hardcorevisor.storage.v1.StorageAgent/ListPools
 
 # Peripheral
-grpcurl -plaintext localhost:9090 hardcorevisor.peripheral.v1.PeripheralManager/ListDevices
+grpcurl -plaintext localhost:19090 hardcorevisor.peripheral.v1.PeripheralManager/ListDevices
 ```
 
 ### hcvctl CLI 테스트
@@ -557,9 +557,9 @@ API 라우터(`internal/api/router.go`)는 `Services` 구조체를 받아 live �
 | `PeripheralManager` | `hardcorevisor.peripheral.v1` | 3 | `internal/peripheral` |
 
 - proto 원본은 `proto/` 디렉터리, 생성 코드는 `controller/pkg/proto/` — `just proto-gen`으로 재생성
-- gRPC reflection 활성화 — `grpcurl -plaintext localhost:9090 list`로 탐색 가능
-- Controller main.go에서 REST(:8080)와 gRPC(:9090)를 동시 서빙
-- 환경변수: `HCV_GRPC_ADDR` (기본 `:9090`)
+- gRPC reflection 활성화 — `grpcurl -plaintext localhost:19090 list`로 탐색 가능
+- Controller main.go에서 REST(:18080)와 gRPC(:19090)를 동시 서빙
+- 환경변수: `HCV_GRPC_ADDR` (기본 `:19090`)
 
 ### etcd 상태 영속화
 
@@ -611,7 +611,7 @@ API 라우터(`internal/api/router.go`)는 `Services` 구조체를 받아 live �
 `internal/config/config.go` — YAML 설정 파일 + 환경변수 오버라이드:
 
 - `config.Load("hcv.yaml")`: 파일 읽기 → 환경변수 오버라이드 → Config 반환
-- `DefaultConfig()`: 기본값 (`:8080`, `:9090`, `info`, `text`)
+- `DefaultConfig()`: 기본값 (`:18080`, `:19090`, `info`, `text`)
 - `hcv.example.yaml`: 문서화된 전체 설정 예제
 - 환경변수가 항상 YAML보다 우선 (8개: `HCV_API_ADDR`, `HCV_GRPC_ADDR`, `HCV_ETCD_ENDPOINTS`, `HCV_TLS_CERT`, `HCV_TLS_KEY`, `HCV_RBAC_USERS`, `HCV_LOG_LEVEL`, `HCV_LOG_FORMAT`)
 
@@ -763,7 +763,7 @@ virtio_blk (게스트 블록 요청) → io_engine (SQ/CQ) → 커널 io_uring �
 
 ## REST API 엔드포인트
 
-기본 주소: `http://localhost:8080`
+기본 주소: `http://localhost:18080`
 
 ### Compute (VM 관리)
 

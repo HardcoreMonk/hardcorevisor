@@ -26,7 +26,7 @@ just test
 두 개의 터미널이 필요하다:
 
 ```bash
-# 터미널 1: Go Controller 시작 (REST :8080 + gRPC :9090)
+# 터미널 1: Go Controller 시작 (REST :18080 + gRPC :19090)
 just go-run
 
 # 터미널 2: TUI 라이브 대시보드
@@ -69,15 +69,15 @@ Controller 실행 후:
 
 ```bash
 # 헬스 체크
-curl -s localhost:8080/healthz | jq
+curl -s localhost:18080/healthz | jq
 
 # VM 생성
-curl -s -X POST localhost:8080/api/v1/vms \
+curl -s -X POST localhost:18080/api/v1/vms \
   -H 'Content-Type: application/json' \
   -d '{"name":"test-vm","vcpus":2,"memory_mb":4096}' | jq
 
 # VM 목록
-curl -s localhost:8080/api/v1/vms | jq
+curl -s localhost:18080/api/v1/vms | jq
 ```
 
 ## hcvctl CLI

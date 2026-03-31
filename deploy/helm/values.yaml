@@ -7,8 +7,8 @@ image:
 
 service:
   type: ClusterIP
-  httpPort: 8080
-  grpcPort: 9090
+  httpPort: 18080
+  grpcPort: 19090
 
 config:
   logLevel: info
@@ -25,14 +25,58 @@ resources:
     cpu: 100m
     memory: 128Mi
 
+# ── Ingress ──
+ingress:
+  enabled: false
+  className: nginx
+  annotations: {}
+  hosts: []
+  #  - host: hcv.example.com
+  tls: []
+  #  - secretName: hcv-tls
+  #    hosts: [hcv.example.com]
+
+# ── Autoscaling ──
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 5
+  targetCPU: 70
+  targetMemory: 80
+
+# ── Persistence ──
+persistence:
+  enabled: false
+  size: 1Gi
+  storageClass: ""
+
+# ── Secrets ──
+secrets:
+  jwtSecret: ""
+  rbacUsers: ""
+
+# ── Network Policy ──
+networkPolicy:
+  enabled: false
+
+# ── Prometheus ServiceMonitor ──
+serviceMonitor:
+  enabled: false
+  interval: "15s"
+
+# ── etcd ──
 etcd:
   enabled: true
   image: quay.io/coreos/etcd:v3.5.17
+  storageSize: 1Gi
+  storageClass: ""
 
+# ── Prometheus ──
 prometheus:
   enabled: true
   image: prom/prometheus:v2.54.0
 
+# ── Grafana ──
 grafana:
   enabled: true
   image: grafana/grafana:11.2.0

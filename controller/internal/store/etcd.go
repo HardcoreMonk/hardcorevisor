@@ -24,7 +24,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -105,7 +105,7 @@ func NewEtcdStore(cfg EtcdConfig) (*EtcdStore, error) {
 		return nil, fmt.Errorf("etcd health check: %w", err)
 	}
 
-	log.Printf("etcd store connected: endpoints=%v prefix=%s", cfg.Endpoints, cfg.Prefix)
+	slog.Info("etcd store connected", "endpoints", cfg.Endpoints, "prefix", cfg.Prefix)
 	return &EtcdStore{client: client, prefix: cfg.Prefix}, nil
 }
 
@@ -235,13 +235,13 @@ func (s *MemoryStore) Close() error { return nil }
 //   - etcd 연결 실패 → 인메모리로 자동 전환 (로그 출력)
 func NewStore(endpoints string) Store {
 	if endpoints == "" {
-		log.Println("store: using in-memory store (no etcd endpoints)")
+		slog.Info("store: using in-memory store (no etcd endpoints)")
 		return NewMemoryStore()
 	}
 	eps := strings.Split(endpoints, ",")
 	store, err := NewEtcdStore(EtcdConfig{Endpoints: eps})
 	if err != nil {
-		log.Printf("store: etcd unavailable (%v), falling back to in-memory", err)
+		slog.Warn("store: etcd unavailable, falling back to in-memory", "error", err)
 		return NewMemoryStore()
 	}
 	return store

@@ -1,0 +1,32 @@
+name: KVM E2E
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ["vmcore/**"]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  kvm-test:
+    name: KVM Real Hardware Tests
+    runs-on: [self-hosted, kvm]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Verify /dev/kvm
+        run: ls -la /dev/kvm
+
+      - name: KVM ioctl tests
+        run: cargo test -p vmcore kvm_sys -- --test-threads=1 --nocapture
+
+      - name: KVM boot tests (mini guest + Linux)
+        run: cargo test -p vmcore kvm_boot -- --test-threads=1 --nocapture
+
+      - name: Full vmcore test suite
+        run: cargo test -p vmcore -- --test-threads=1

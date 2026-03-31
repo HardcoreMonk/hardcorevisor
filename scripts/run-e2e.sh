@@ -168,7 +168,7 @@ if [ "$WITH_STACK" = true ]; then
 
     # Health checks
     run_step "controller healthz" \
-        curl -sf http://localhost:8080/healthz
+        curl -sf http://localhost:18080/healthz
 
     run_step "etcd health" \
         curl -sf http://localhost:2379/health
@@ -182,11 +182,11 @@ if [ "$WITH_STACK" = true ]; then
     # E2E against running stack
     run_step "E2E against live controller" \
         bash -c "
-            curl -sf http://localhost:8080/api/v1/version &&
-            curl -sf -X POST http://localhost:8080/api/v1/vms \
+            curl -sf http://localhost:18080/api/v1/version &&
+            curl -sf -X POST http://localhost:18080/api/v1/vms \
                 -H 'Content-Type: application/json' \
                 -d '{\"name\":\"e2e-live\",\"vcpus\":2,\"memory_mb\":4096}' &&
-            curl -sf http://localhost:8080/api/v1/vms
+            curl -sf http://localhost:18080/api/v1/vms
         "
 
     echo ""

@@ -16,11 +16,55 @@ package metrics
 
 import (
 	"net/http"
+	"regexp"
 	"strconv"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
+
+// pathNormalizers — URL 경로의 동적 파라미터를 정규화하여
+// 메트릭 카디널리티 폭발을 방지한다.
+// /api/v1/vms/123 → /api/v1/vms/{id}
+var pathNormalizers = []*regexp.Regexp{
+	regexp.MustCompile(`/api/v1/vms/\d+`),
+	regexp.MustCompile(`/api/v1/devices/[^/]+`),
+	regexp.MustCompile(`/api/v1/backups/[^/]+`),
+	regexp.MustCompile(`/api/v1/snapshots/[^/]+`),
+	regexp.MustCompile(`/api/v1/templates/[^/]+`),
+	regexp.MustCompile(`/api/v1/images/[^/]+`),
+	regexp.MustCompile(`/api/v1/tasks/[^/]+`),
+	regexp.MustCompile(`/api/v1/storage/volumes/[^/]+`),
+	regexp.MustCompile(`/api/v1/cluster/fence/[^/]+`),
+	regexp.MustCompile(`/api/v1/auth/users/[^/]+`),
+	regexp.MustCompile(`/api/v1/nodes/[^/]+`),
+	regexp.MustCompile(`/api/v1/network/zones/[^/]+`),
+}
+
+var pathReplacements = []string{
+	"/api/v1/vms/{id}",
+	"/api/v1/devices/{id}",
+	"/api/v1/backups/{id}",
+	"/api/v1/snapshots/{id}",
+	"/api/v1/templates/{id}",
+	"/api/v1/images/{id}",
+	"/api/v1/tasks/{id}",
+	"/api/v1/storage/volumes/{id}",
+	"/api/v1/cluster/fence/{node}",
+	"/api/v1/auth/users/{username}",
+	"/api/v1/nodes/{id}",
+	"/api/v1/network/zones/{name}",
+}
+
+// normalizePath — 동적 경로 파라미터를 플레이스홀더로 치환한다.
+func normalizePath(path string) string {
+	for i, re := range pathNormalizers {
+		if re.MatchString(path) {
+			return pathReplacements[i]
+		}
+	}
+	return path
+}
 
 var (
 	// VMsTotal 은 상태(state)와 백엔드(backend)별 VM 수를 추적한다.
@@ -92,7 +136,7 @@ func InstrumentHandler(next http.Handler) http.Handler {
 		next.ServeHTTP(wi, r)
 		duration := time.Since(start).Seconds()
 
-		path := r.URL.Path
+		path := normalizePath(r.URL.Path)
 		method := r.Method
 		status := strconv.Itoa(wi.statusCode)
 

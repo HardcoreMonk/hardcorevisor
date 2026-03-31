@@ -3,8 +3,8 @@
 // 설정 우선순위: 환경변수 > YAML 파일 > 기본값
 //
 // 지원 환경변수 (YAML보다 항상 우선):
-//   - HCV_API_ADDR: REST API 주소 (기본값: ":8080")
-//   - HCV_GRPC_ADDR: gRPC 서버 주소 (기본값: ":9090")
+//   - HCV_API_ADDR: REST API 주소 (기본값: ":18080")
+//   - HCV_GRPC_ADDR: gRPC 서버 주소 (기본값: ":19090")
 //   - HCV_ETCD_ENDPOINTS: etcd 엔드포인트 (쉼표 구분, 미설정 시 인메모리)
 //   - HCV_TLS_CERT: TLS 인증서 파일 경로
 //   - HCV_TLS_KEY: TLS 키 파일 경로
@@ -36,6 +36,13 @@ type Config struct {
 	Log        LogConfig        `yaml:"log"`
 	Storage    StorageConfig    `yaml:"storage"`
 	Peripheral PeripheralConfig `yaml:"peripheral"`
+	Otel       OtelConfig       `yaml:"otel"`
+}
+
+// OtelConfig 는 OpenTelemetry 분산 트레이싱 설정을 보관한다.
+// Endpoint가 빈 문자열이면 트레이싱이 비활성화된다.
+type OtelConfig struct {
+	Endpoint string `yaml:"endpoint"` // OTLP HTTP endpoint (예: "http://localhost:4318")
 }
 
 // OAuth2Config 는 OAuth2/OIDC 프로바이더 설정을 보관한다.
@@ -44,7 +51,7 @@ type OAuth2Config struct {
 	ProviderURL  string `yaml:"provider_url"`  // OIDC 프로바이더 URL
 	ClientID     string `yaml:"client_id"`     // OAuth2 클라이언트 ID
 	ClientSecret string `yaml:"client_secret"` // OAuth2 클라이언트 시크릿
-	RedirectURL  string `yaml:"redirect_url"`  // 콜백 URL (기본: http://localhost:8080/api/v1/auth/oauth2/callback)
+	RedirectURL  string `yaml:"redirect_url"`  // 콜백 URL (기본: http://localhost:18080/api/v1/auth/oauth2/callback)
 }
 
 // StorageConfig 는 스토리지 백엔드 설정을 보관한다.
@@ -60,13 +67,13 @@ type PeripheralConfig struct {
 
 // APIConfig 는 REST API 서버 설정을 보관한다.
 type APIConfig struct {
-	Addr      string `yaml:"addr"`       // default ":8080"
+	Addr      string `yaml:"addr"`       // default ":18080"
 	RateLimit int    `yaml:"rate_limit"` // requests per second, 0 = no limit
 }
 
 // GRPCConfig 는 gRPC 서버 설정을 보관한다.
 type GRPCConfig struct {
-	Addr string `yaml:"addr"` // default ":9090"
+	Addr string `yaml:"addr"` // default ":19090"
 }
 
 // EtcdConfig 는 etcd 연결 설정을 보관한다.
@@ -114,11 +121,11 @@ type LogConfig struct {
 }
 
 // DefaultConfig 는 합리적인 기본값으로 Config를 반환한다.
-// 기본값: API ":8080", gRPC ":9090", 로그 레벨 "info", 로그 형식 "text"
+// 기본값: API ":18080", gRPC ":19090", 로그 레벨 "info", 로그 형식 "text"
 func DefaultConfig() *Config {
 	return &Config{
-		API:  APIConfig{Addr: ":8080"},
-		GRPC: GRPCConfig{Addr: ":9090"},
+		API:  APIConfig{Addr: ":18080"},
+		GRPC: GRPCConfig{Addr: ":19090"},
 		Auth: AuthConfig{DBPath: "hcv.db"},
 		Log:  LogConfig{Level: "info", Format: "text"},
 	}
@@ -197,6 +204,47 @@ func Load(path string) (*Config, error) {
 	if v := os.Getenv("HCV_OAUTH2_CLIENT_SECRET"); v != "" {
 		cfg.OAuth2.ClientSecret = v
 	}
+	// OpenTelemetry 환경변수 오버라이드
+	if v := os.Getenv("HCV_OTEL_ENDPOINT"); v != "" {
+		cfg.Otel.Endpoint = v
+	}
 
 	return cfg, nil
+}
+
+// Validate — 설정의 기본 유효성을 검사한다.
+// 빈 필수 필드나 잘못된 값이 있으면 에러 메시지 목록을 반환한다.
+func (c *Config) Validate() []string {
+	var warnings []string
+	if c.API.Addr == "" {
+		warnings = append(warnings, "api.addr is empty")
+	}
+	if c.GRPC.Addr == "" {
+		warnings = append(warnings, "grpc.addr is empty")
+	}
+	if c.Auth.JWTSecret == "" {
+		warnings = append(warnings, "auth.jwt_secret not set — random key will be used (tokens invalidated on restart)")
+	}
+	if c.Log.Level != "" {
+		switch c.Log.Level {
+		case "debug", "info", "warn", "error":
+		default:
+			warnings = append(warnings, "log.level must be one of: debug, info, warn, error")
+		}
+	}
+	if c.Log.Format != "" {
+		switch c.Log.Format {
+		case "text", "json":
+		default:
+			warnings = append(warnings, "log.format must be one of: text, json")
+		}
+	}
+	if c.Storage.Driver != "" {
+		switch c.Storage.Driver {
+		case "memory", "zfs", "ceph":
+		default:
+			warnings = append(warnings, "storage.driver must be one of: memory, zfs, ceph")
+		}
+	}
+	return warnings
 }
