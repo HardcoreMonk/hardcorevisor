@@ -136,12 +136,12 @@ func DefaultSecurityConfig() LXCSecurityDefaults {
 func (c *LXCConfig) GenerateConfig() string {
 	var b strings.Builder
 
-	b.WriteString(fmt.Sprintf("lxc.rootfs.path = dir:%s\n", c.RootFS))
-	b.WriteString(fmt.Sprintf("lxc.uts.name = %s\n", c.Name))
+	fmt.Fprintf(&b, "lxc.rootfs.path = dir:%s\n", c.RootFS)
+	fmt.Fprintf(&b, "lxc.uts.name = %s\n", c.Name)
 
 	// Network
-	b.WriteString(fmt.Sprintf("lxc.net.0.type = %s\n", c.NetworkType))
-	b.WriteString(fmt.Sprintf("lxc.net.0.link = %s\n", c.BridgeName))
+	fmt.Fprintf(&b, "lxc.net.0.type = %s\n", c.NetworkType)
+	fmt.Fprintf(&b, "lxc.net.0.link = %s\n", c.BridgeName)
 	b.WriteString("lxc.net.0.flags = up\n")
 	if c.IPAddress != "" {
 		b.WriteString(fmt.Sprintf("lxc.net.0.ipv4.address = %s/24\n", c.IPAddress))

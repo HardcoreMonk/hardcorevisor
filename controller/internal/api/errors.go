@@ -6,7 +6,6 @@ package api
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 )
 
@@ -114,11 +113,4 @@ func validateRequired(fields map[string]string) string {
 	return ""
 }
 
-// validateRange — 정수 값이 지정된 범위 내에 있는지 검사한다.
-// 범위를 벗어나면 에러 메시지를 반환한다.
-func validateRange(field string, value, min, max int) string {
-	if value < min || value > max {
-		return fmt.Sprintf("%s must be between %d and %d, got %d", field, min, max, value)
-	}
-	return ""
-}
+

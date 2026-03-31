@@ -1427,14 +1427,6 @@ func (svc *Services) handleClusterPromote(w http.ResponseWriter, _ *http.Request
 	})
 }
 
-func handleStubList(name string) http.HandlerFunc {
-	return func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, []map[string]string{
-			{"name": name + "-default", "status": "active"},
-		})
-	}
-}
-
 // ── Backup Handlers ──────────────────────────────────
 
 func (svc *Services) handleListBackups(w http.ResponseWriter, r *http.Request) {
