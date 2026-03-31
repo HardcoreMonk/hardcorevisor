@@ -35,9 +35,9 @@ deploy/data/
 # ═══ Coverage ═══
 *.profraw
 *.profdata
-*.html
+controller/coverage.html
 controller/coverage.out
-tarpaulin-report.html
+target/coverage/*.html
 
 # ═══ Documentation ═══
 docs/book-output/
