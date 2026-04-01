@@ -6,6 +6,8 @@ on:
 
 env:
   GOTOOLCHAIN: local
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
   release:
@@ -13,11 +15,12 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+      packages: write
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-go@v5
-        with: { go-version: '1.23' }
+        with: { go-version: '1.25' }
       - uses: Swatinem/rust-cache@v2
 
       - name: Build Rust
@@ -37,3 +40,21 @@ jobs:
             target/hcv-controller
             target/hcvctl
           generate_release_notes: true
+
+      # ── GHCR Docker 이미지 push ──
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile.controller
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest

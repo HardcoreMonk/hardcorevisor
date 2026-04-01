@@ -1,0 +1,40 @@
+name: Bug Report
+description: Report a bug in HardCoreVisor
+labels: ["bug"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What happened?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+      description: How can we reproduce this?
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - vmcore (Rust KVM)
+        - Controller (Go)
+        - Web UI
+        - TUI
+        - CLI (hcvctl)
+        - Helm/K8s
+        - Docker
+        - Documentation
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, kernel version, Go/Rust version

@@ -1,5 +1,10 @@
 # HardCoreVisor
 
+[![CI](https://github.com/HardcoreMonk/hardcorevisor/actions/workflows/ci.yml/badge.svg)](https://github.com/HardcoreMonk/hardcorevisor/actions/workflows/ci.yml)
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
+[![Go](https://img.shields.io/badge/Go-1.25-00ADD8.svg)](https://go.dev)
+[![Rust](https://img.shields.io/badge/Rust-1.82+-DEA584.svg)](https://www.rust-lang.org)
+
 > **"타협 없는 성능·보안·안정성의 하이퍼바이저 감독자"**
 
 VMware × Proxmox 두 플랫폼의 모든 강점을 통합한 차세대 하이브리드 가상화 플랫폼.
@@ -149,6 +154,28 @@ sudo just stack-test
 | **PeripheralManager** | 3 | `hardcorevisor.peripheral.v1` |
 
 gRPC reflection 활성 — `grpcurl -plaintext localhost:19090 list`
+
+## Docker Quick Start
+
+```bash
+# 전체 스택 실행 (Controller + etcd + Prometheus + Grafana)
+docker compose -f deploy/docker-compose.yml up -d
+
+# 확인
+curl http://localhost:18080/healthz         # REST API
+curl http://localhost:18080/api/v1/version  # 버전 정보
+open http://localhost:3000                  # Grafana (admin/admin)
+open http://localhost:18080/api/v1/docs     # Swagger UI
+```
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guidelines.
+
+```bash
+just hooks   # Install pre-commit + commit-msg hooks
+just check   # Run lint + test before committing
+```
 
 ## License
 

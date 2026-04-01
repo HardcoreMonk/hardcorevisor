@@ -10,7 +10,7 @@ env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
   RUST_COVERAGE_MIN: 50
-  GO_COVERAGE_MIN: 20
+  GO_COVERAGE_MIN: 30
 
 jobs:
   # ─────────────────────────────────────────────────
