@@ -152,11 +152,11 @@ func (c *LXCConfig) GenerateConfig() string {
 
 	// Cgroup v2 resource limits
 	for k, v := range c.GenerateCgroupLimits() {
-		b.WriteString(fmt.Sprintf("%s = %s\n", k, v))
+		fmt.Fprintf(&b, "%s = %s\n", k, v)
 	}
 
 	// Architecture
-	b.WriteString(fmt.Sprintf("lxc.arch = %s\n", c.Arch))
+	fmt.Fprintf(&b, "lxc.arch = %s\n", c.Arch)
 
 	// Security: UID/GID mapping (unprivileged containers)
 	if !c.Privileged {
@@ -176,18 +176,18 @@ func (c *LXCConfig) GenerateConfig() string {
 		if gidSize == 0 {
 			gidSize = 65536
 		}
-		b.WriteString(fmt.Sprintf("lxc.idmap = u 0 %d %d\n", uidStart, uidSize))
-		b.WriteString(fmt.Sprintf("lxc.idmap = g 0 %d %d\n", gidStart, gidSize))
+		fmt.Fprintf(&b, "lxc.idmap = u 0 %d %d\n", uidStart, uidSize)
+		fmt.Fprintf(&b, "lxc.idmap = g 0 %d %d\n", gidStart, gidSize)
 	}
 
 	// Seccomp profile
 	if c.SeccompProfile != "" {
-		b.WriteString(fmt.Sprintf("lxc.seccomp.profile = %s\n", c.SeccompProfile))
+		fmt.Fprintf(&b, "lxc.seccomp.profile = %s\n", c.SeccompProfile)
 	}
 
 	// AppArmor profile
 	if c.AppArmorProfile != "" {
-		b.WriteString(fmt.Sprintf("lxc.apparmor.profile = %s\n", c.AppArmorProfile))
+		fmt.Fprintf(&b, "lxc.apparmor.profile = %s\n", c.AppArmorProfile)
 	}
 
 	// Nesting support
@@ -197,12 +197,12 @@ func (c *LXCConfig) GenerateConfig() string {
 
 	// Drop capabilities
 	for _, cap := range c.DropCapabilities {
-		b.WriteString(fmt.Sprintf("lxc.cap.drop = %s\n", cap))
+		fmt.Fprintf(&b, "lxc.cap.drop = %s\n", cap)
 	}
 
 	// Mounts
 	for _, mount := range c.Mounts {
-		b.WriteString(fmt.Sprintf("lxc.mount.entry = %s\n", mount))
+		fmt.Fprintf(&b, "lxc.mount.entry = %s\n", mount)
 	}
 
 	return b.String()
