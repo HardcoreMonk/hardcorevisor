@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/HardcoreMonk/hardcorevisor/compare/v0.1.0...v0.2.0) (2026-04-01)
+
+
+### Features
+
+* 실제 VM 부팅 지원 — QEMU Real 모드 + 디스크/ISO/VNC 통합 ([a85f37f](https://github.com/HardcoreMonk/hardcorevisor/commit/a85f37f6f101a7dd4e24dcbda79fb5a71a3ea1ef))
+
 ## [0.2.0] - 2026-03-23
 
 ### Added (Phase 12–17)
