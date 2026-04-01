@@ -94,8 +94,8 @@ func main() {
 	slog.Info("HardCoreVisor Controller starting", "version", version, "node", nodeName)
 
 	// ── 서비스 초기화 ──
-	// MockVMCore: 실제 libvmcore.a 없이 순수 Go로 VM 상태를 관리하는 테스트 백엔드
-	core := ffi.NewMockVMCore()
+	// CGo 빌드 태그에 따라 실제(CGoVMCore) 또는 Mock(MockVMCore) 백엔드 자동 선택
+	core := ffi.NewBackend()
 	core.Init()
 
 	// ── Triple VMM 백엔드 구성 (Phase 16 추가: LXC) ──
@@ -103,7 +103,19 @@ func main() {
 	// QEMU: 범용 VM — Windows, GPU 패스스루, 레거시 OS (Handle 10000~19999)
 	// LXC: 경량 Linux 컨테이너 — 빠른 시작, 낮은 오버헤드 (Handle 20000+)
 	rustVMM := compute.NewRustVMMBackend(core)
-	qemuBackend := compute.NewQEMUBackend(&compute.QEMUConfig{Emulated: true})
+	// QEMU 모드: config에서 real/emulated 선택 (HCV_QEMU_MODE 환경변수)
+	qemuEmulated := cfg.QEMU.Mode != "real"
+	qemuSocketDir := cfg.QEMU.SocketDir
+	if qemuSocketDir == "" {
+		qemuSocketDir = "/tmp/hcv"
+	}
+	qemuBackend := compute.NewQEMUBackend(&compute.QEMUConfig{
+		Emulated:  qemuEmulated,
+		QMPSocket: qemuSocketDir,
+	})
+	if !qemuEmulated {
+		slog.Info("QEMU Real mode enabled", "socket_dir", qemuSocketDir)
+	}
 	lxcBackend := compute.NewLXCBackend(&compute.LXCBackendConfig{Emulated: true})
 	// BackendSelector: 워크로드 특성에 따라 적합한 VMM을 자동 선택
 	// PolicyAuto: GPU/대형 → QEMU, 컨테이너 → LXC, 경량 Linux → RustVMM

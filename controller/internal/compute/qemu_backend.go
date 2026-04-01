@@ -365,33 +365,70 @@ func (b *QEMUBackend) qmpCreateVM(handle int32, name string, vcpus uint32, memor
 		return fmt.Errorf("qemu-system-x86_64 not found: %w", err)
 	}
 
+	// per-VM 설정 조회
+	b.mu.RLock()
+	vm := b.vms[handle]
+	b.mu.RUnlock()
+
+	// VNC display: handle 기반 (10000 → display 0, 10001 → display 1, ...)
+	vncDisplay := int(handle - 10000)
+	if vncDisplay < 0 {
+		vncDisplay = 0
+	}
+	vncPort := 5900 + vncDisplay
+
 	args := []string{
 		"-name", name,
 		"-machine", "q35,accel=kvm",
 		"-smp", fmt.Sprintf("%d", vcpus),
 		"-m", fmt.Sprintf("%d", memoryMB),
 		"-qmp", fmt.Sprintf("unix:%s,server,nowait", socketPath),
-		"-nographic",
-		"-nodefaults",
+		"-vnc", fmt.Sprintf(":%d", vncDisplay),
+		"-vga", "virtio",
 	}
 
-	// Disk: use default disk image if configured
-	diskPath := b.defaultDisk
+	// Disk: per-VM 디스크 경로 우선, 없으면 백엔드 기본값
+	diskPath := ""
+	if vm != nil && vm.DiskPath != "" {
+		diskPath = vm.DiskPath
+	} else if b.defaultDisk != "" {
+		diskPath = b.defaultDisk
+	}
 	if diskPath != "" {
-		args = append(args, "-drive", fmt.Sprintf("file=%s,format=qcow2,if=virtio", diskPath))
+		args = append(args, "-drive", fmt.Sprintf("file=%s,format=qcow2,if=virtio,cache=writeback", diskPath))
 	}
 
-	// Network
-	switch b.networkMode {
+	// ISO: CD-ROM 마운트 (OS 설치용)
+	if vm != nil && vm.ISOPath != "" {
+		args = append(args, "-cdrom", vm.ISOPath)
+		// ISO가 있으면 CD-ROM에서 부팅 우선
+		args = append(args, "-boot", "d")
+	}
+
+	// Network: per-VM 네트워크 모드, 없으면 백엔드 기본값
+	netMode := b.networkMode
+	if vm != nil && vm.NetworkMode != "" {
+		netMode = vm.NetworkMode
+	}
+	tapName := fmt.Sprintf("tap-hcv-%d", handle)
+	switch netMode {
 	case "tap":
-		args = append(args, "-netdev", "tap,id=net0,ifname=tap0,script=no,downscript=no")
+		args = append(args, "-netdev", fmt.Sprintf("tap,id=net0,ifname=%s,script=no,downscript=no", tapName))
 		args = append(args, "-device", "virtio-net-pci,netdev=net0")
 	case "user":
-		args = append(args, "-netdev", "user,id=net0,hostfwd=tcp::2222-:22")
+		sshPort := 2222 + int(handle-10000)
+		args = append(args, "-netdev", fmt.Sprintf("user,id=net0,hostfwd=tcp::%d-:22", sshPort))
 		args = append(args, "-device", "virtio-net-pci,netdev=net0")
 	default: // none
 		args = append(args, "-nic", "none")
 	}
+
+	// VNC 포트 기록
+	if vm != nil {
+		vm.VNCPort = vncPort
+	}
+
+	slog.Info("launching QEMU", "handle", handle, "name", name, "vnc_port", vncPort, "disk", diskPath)
 
 	cmd := exec.Command(qemuBin, args...)
 	if err := cmd.Start(); err != nil {

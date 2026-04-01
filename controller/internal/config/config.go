@@ -37,6 +37,15 @@ type Config struct {
 	Storage    StorageConfig    `yaml:"storage"`
 	Peripheral PeripheralConfig `yaml:"peripheral"`
 	Otel       OtelConfig       `yaml:"otel"`
+	QEMU       QEMUCfg          `yaml:"qemu"`
+}
+
+// QEMUCfg 는 QEMU 백엔드 설정을 보관한다.
+// Mode가 "real"이면 실제 qemu-system-x86_64 프로세스를 실행한다.
+type QEMUCfg struct {
+	Mode      string `yaml:"mode"`       // "emulated" (default) or "real"
+	SocketDir string `yaml:"socket_dir"` // QMP unix socket 디렉터리 (default: "/tmp/hcv")
+	DiskDir   string `yaml:"disk_dir"`   // 디스크 이미지 저장 디렉터리 (default: "/var/lib/hcv/disks")
 }
 
 // OtelConfig 는 OpenTelemetry 분산 트레이싱 설정을 보관한다.
@@ -207,6 +216,16 @@ func Load(path string) (*Config, error) {
 	// OpenTelemetry 환경변수 오버라이드
 	if v := os.Getenv("HCV_OTEL_ENDPOINT"); v != "" {
 		cfg.Otel.Endpoint = v
+	}
+	// QEMU 환경변수 오버라이드
+	if v := os.Getenv("HCV_QEMU_MODE"); v != "" {
+		cfg.QEMU.Mode = v
+	}
+	if v := os.Getenv("HCV_QEMU_SOCKET_DIR"); v != "" {
+		cfg.QEMU.SocketDir = v
+	}
+	if v := os.Getenv("HCV_QEMU_DISK_DIR"); v != "" {
+		cfg.QEMU.DiskDir = v
 	}
 
 	return cfg, nil

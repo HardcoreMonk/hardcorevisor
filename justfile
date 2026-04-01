@@ -153,6 +153,12 @@ build: rust-build go-build
 # Build release binaries
 release: rust-release go-controller go-hcvctl
 
+# Build CGo production binary (libvmcore.a + Go controller)
+build-cgo:
+    cargo build -p vmcore --release
+    cd controller && go build -tags cgo_vmcore -o ../target/hcv-controller-cgo ./cmd/controller
+    @echo "CGo binary: target/hcv-controller-cgo"
+
 # Run all tests (Rust 48 + Go 11 = 59 tests)
 test: rust-test go-test
 

@@ -96,6 +96,10 @@ type VMInfo struct {
 	Template      string             `json:"template,omitempty"`
 	Arch          string             `json:"arch,omitempty"`
 	IPAddress     string             `json:"ip_address,omitempty"`
+	DiskPath      string             `json:"disk_path,omitempty"`
+	ISOPath       string             `json:"iso_path,omitempty"`
+	NetworkMode   string             `json:"network_mode,omitempty"`
+	VNCPort       int                `json:"vnc_port,omitempty"`
 }
 
 // VMMBackend — VMM 백엔드가 구현해야 하는 인터페이스.

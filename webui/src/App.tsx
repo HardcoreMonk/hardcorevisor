@@ -13,6 +13,7 @@ import SnapshotsPage from './pages/SnapshotsPage'
 import TemplatesPage from './pages/TemplatesPage'
 import ImagesPage from './pages/ImagesPage'
 import TasksPage from './pages/TasksPage'
+import VmConsole from './pages/VmConsole'
 import { useWebSocket } from './hooks/useWebSocket'
 
 function AuthGuard({ children }: { children: React.ReactNode }) {
@@ -42,6 +43,7 @@ function AppRoutes() {
         <Route path="/templates" element={<TemplatesPage />} />
         <Route path="/images" element={<ImagesPage />} />
         <Route path="/tasks" element={<TasksPage />} />
+        <Route path="/vms/:id/console" element={<VmConsole />} />
       </Route>
     </Routes>
   )

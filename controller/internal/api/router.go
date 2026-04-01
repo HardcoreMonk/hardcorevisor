@@ -142,6 +142,7 @@ func NewRouter(svc *Services, rbacUsers ...map[string]auth.RBACUser) http.Handle
 		mux.HandleFunc("GET /api/v1/vms/{id}/migration", svc.handleGetMigrationStatus)
 		mux.HandleFunc("DELETE /api/v1/vms/{id}/migration", svc.handleCancelMigration)
 		mux.HandleFunc("GET /api/v1/vms/{id}/stats", svc.handleVMStats)
+		mux.HandleFunc("GET /api/v1/vms/{id}/console", svc.handleVNCConsole)
 		mux.HandleFunc("POST /api/v1/vms/{id}/exec", svc.handleContainerExec)
 		mux.HandleFunc("GET /api/v1/nodes", handleListNodes)
 		mux.HandleFunc("GET /api/v1/nodes/{id}", svc.handleGetNode)
@@ -159,6 +160,7 @@ func NewRouter(svc *Services, rbacUsers ...map[string]auth.RBACUser) http.Handle
 		mux.HandleFunc("GET /api/v1/storage/pools", svc.handleStoragePools)
 		mux.HandleFunc("GET /api/v1/storage/volumes", svc.handleStorageVolumes)
 		mux.HandleFunc("POST /api/v1/storage/volumes", svc.handleCreateVolume)
+		mux.HandleFunc("POST /api/v1/storage/disks", svc.handleCreateDisk)
 		mux.HandleFunc("GET /api/v1/storage/volumes/{id}", svc.handleGetVolume)
 		mux.HandleFunc("DELETE /api/v1/storage/volumes/{id}", svc.handleDeleteVolume)
 		mux.HandleFunc("POST /api/v1/storage/volumes/{id}/resize", svc.handleResizeVolume)
@@ -507,6 +509,9 @@ func (svc *Services) handleCreateVM(w http.ResponseWriter, r *http.Request) {
 		Type          string `json:"type"`
 		Template      string `json:"template"`
 		RestartPolicy string `json:"restart_policy"`
+		DiskPath      string `json:"disk_path"`
+		ISOPath       string `json:"iso_path"`
+		NetworkMode   string `json:"network_mode"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", err.Error())
@@ -551,6 +556,17 @@ func (svc *Services) handleCreateVM(w http.ResponseWriter, r *http.Request) {
 	// Set template if specified (for LXC containers)
 	if req.Template != "" {
 		vm.Template = req.Template
+	}
+
+	// Set disk/ISO/network for QEMU Real mode
+	if req.DiskPath != "" {
+		vm.DiskPath = req.DiskPath
+	}
+	if req.ISOPath != "" {
+		vm.ISOPath = req.ISOPath
+	}
+	if req.NetworkMode != "" {
+		vm.NetworkMode = req.NetworkMode
 	}
 
 	writeJSON(w, http.StatusCreated, vm)
@@ -1092,6 +1108,44 @@ func (svc *Services) handleExportVolume(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "exported", "volume_id": id, "path": req.Path})
+}
+
+// handleCreateDisk — qcow2/raw 디스크 이미지 생성 (POST /api/v1/storage/disks).
+// 요청: {"name": "ubuntu-disk", "format": "qcow2", "size_gb": 20}
+// qemu-img create 명령으로 실제 디스크 파일을 생성하고 경로를 반환한다.
+func (svc *Services) handleCreateDisk(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name   string `json:"name"`
+		Format string `json:"format"`
+		SizeGB int    `json:"size_gb"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body", err.Error())
+		return
+	}
+	if req.Name == "" {
+		writeError(w, http.StatusBadRequest, ErrCodeBadRequest, "name is required")
+		return
+	}
+	if req.SizeGB <= 0 {
+		req.SizeGB = 10
+	}
+	if req.Format == "" {
+		req.Format = "qcow2"
+	}
+
+	diskDir := "/var/lib/hcv/disks"
+	path, err := storage.CreateDisk(diskDir, req.Name, req.Format, req.SizeGB)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, ErrCodeInternal, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"name":    req.Name,
+		"format":  req.Format,
+		"size_gb": req.SizeGB,
+		"path":    path,
+	})
 }
 
 // handleImportVolume — 볼륨 가져오기 (POST /api/v1/storage/volumes/import).
