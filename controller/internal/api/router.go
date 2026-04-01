@@ -662,10 +662,11 @@ func (svc *Services) handleMigrateVM(w http.ResponseWriter, r *http.Request) {
 						return
 					}
 					t.SetProgress(ms.Progress)
-					if ms.Phase == "completed" {
+					switch ms.Phase {
+					case "completed":
 						t.Complete()
 						return
-					} else if ms.Phase == "failed" {
+					case "failed":
 						t.Fail(ms.Error)
 						return
 					}

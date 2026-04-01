@@ -144,10 +144,10 @@ func (c *LXCConfig) GenerateConfig() string {
 	fmt.Fprintf(&b, "lxc.net.0.link = %s\n", c.BridgeName)
 	b.WriteString("lxc.net.0.flags = up\n")
 	if c.IPAddress != "" {
-		b.WriteString(fmt.Sprintf("lxc.net.0.ipv4.address = %s/24\n", c.IPAddress))
+		fmt.Fprintf(&b, "lxc.net.0.ipv4.address = %s/24\n", c.IPAddress)
 	}
 	if c.Gateway != "" {
-		b.WriteString(fmt.Sprintf("lxc.net.0.ipv4.gateway = %s\n", c.Gateway))
+		fmt.Fprintf(&b, "lxc.net.0.ipv4.gateway = %s\n", c.Gateway)
 	}
 
 	// Cgroup v2 resource limits
