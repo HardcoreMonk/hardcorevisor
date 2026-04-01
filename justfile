@@ -187,6 +187,11 @@ clean:
     cd controller && go clean ./...
     rm -rf target/controller target/hcvctl
 
+# Demo: start full stack with sample data
+demo:
+    chmod +x scripts/demo.sh
+    ./scripts/demo.sh
+
 # ═══════════════════════════════════════════════════════════
 # Web UI Recipes
 # ═══════════════════════════════════════════════════════════

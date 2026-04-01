@@ -155,17 +155,32 @@ sudo just stack-test
 
 gRPC reflection 활성 — `grpcurl -plaintext localhost:19090 list`
 
-## Docker Quick Start
+## Quick Start
 
 ```bash
-# 전체 스택 실행 (Controller + etcd + Prometheus + Grafana)
-docker compose -f deploy/docker-compose.yml up -d
+# One-liner: 전체 스택 + 샘플 VM 자동 생성
+just demo
 
-# 확인
-curl http://localhost:18080/healthz         # REST API
-curl http://localhost:18080/api/v1/version  # 버전 정보
-open http://localhost:3000                  # Grafana (admin/admin)
-open http://localhost:18080/api/v1/docs     # Swagger UI
+# 또는 수동으로:
+docker compose -f deploy/docker-compose.yml up -d
+curl http://localhost:18080/healthz
+```
+
+| 서비스 | URL |
+|--------|-----|
+| REST API | http://localhost:18080 |
+| Swagger UI | http://localhost:18080/api/v1/docs |
+| Grafana | http://localhost:3000 (admin/admin) |
+| Prometheus | http://localhost:9090 |
+| gRPC | localhost:19090 |
+
+```bash
+# VM 생성 → 시작 → 조회
+curl -X POST localhost:18080/api/v1/vms \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"my-vm","vcpus":2,"memory_mb":4096}' | jq
+curl -X POST localhost:18080/api/v1/vms/1/start | jq
+curl localhost:18080/api/v1/vms | jq
 ```
 
 ## Contributing
